@@ -187,6 +187,7 @@ object ConfigCache {
                     packageName = pkgName
                     this.apkPath = apkPath
                     appId = appInfo.uid
+                    versionCode = pkgInfo.longVersionCode
                     applicationInfo = appInfo
                     service = oldModule?.service ?: InjectedModuleService(pkgName)
                     file = preLoadedApk
@@ -340,6 +341,8 @@ object ConfigCache {
   fun getModuleByUid(uid: Int): Module? =
       state.modules.values.firstOrNull { it.appId == uid % PER_USER_RANGE }
 
+  fun getModuleByPackage(packageName: String): Module? = state.modules[packageName]
+
   fun getModulesForSystemServer(): List<Module> {
     val modules = mutableListOf<Module>()
     if (!android.os.SELinux.checkSELinuxAccess(
@@ -376,6 +379,7 @@ object ConfigCache {
                   packageName = pkgName
                   this.apkPath = apkPath
                   appId = runCatching { Os.stat(statPath).st_uid }.getOrDefault(-1)
+                  versionCode = 0
                   service = InjectedModuleService(pkgName)
                 }
 

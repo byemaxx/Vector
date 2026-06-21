@@ -7,5 +7,7 @@
 -keepclasseswithmembers class org.matrix.vector.service.BridgeService {
     public static boolean *(android.os.IBinder, int, long, long, int);
 }
+
+-dontwarn io.github.libxposed.annotation.**
 -repackageclasses
 -allowaccessmodification

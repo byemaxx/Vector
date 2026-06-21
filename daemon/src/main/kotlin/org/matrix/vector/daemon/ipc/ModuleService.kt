@@ -7,6 +7,8 @@ import android.os.Bundle
 import android.os.ParcelFileDescriptor
 import android.os.RemoteException
 import android.util.Log
+import io.github.libxposed.service.HookedProcess
+import io.github.libxposed.service.IHotReloadCallback
 import io.github.libxposed.service.IXposedScopeCallback
 import io.github.libxposed.service.IXposedService
 import java.io.Serializable
@@ -138,6 +140,45 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
       runCatching { ModuleDatabase.removeModuleScope(loadedModule.packageName, pkg, userId) }
           .onFailure { Log.e(TAG, "Error removing scope for $pkg", it) }
     }
+  }
+
+  override fun getRunningTargets(): List<HookedProcess> {
+    ensureModule()
+    return ApplicationService.getRunningTargets(loadedModule)
+  }
+
+  override fun hotReloadModule(
+      targetId: Long,
+      data: Bundle?,
+      callback: IHotReloadCallback?
+  ) {
+    ensureModule()
+    runCatching {
+          if (loadedModule.file.moduleClassNames.size != 1) {
+            throw HotReloadUnsupportedException("Hot reload requires exactly one Java entry class")
+          }
+          val latest =
+              ConfigCache.getModuleByPackage(loadedModule.packageName)
+                  ?: throw HotReloadUnsupportedException(
+                      "Module ${loadedModule.packageName} is not enabled")
+          if (latest.file.moduleClassNames.size != 1) {
+            throw HotReloadUnsupportedException(
+                "Hot reload requires exactly one Java entry class")
+          }
+          ApplicationService.hotReloadTarget(targetId, latest, data)
+          callback?.onHotReloadResult(IXposedService.HOT_RELOAD_SUCCEEDED, null)
+        }
+        .onFailure { throwable ->
+          if (throwable is SecurityException) throw throwable
+          val status =
+              when (throwable) {
+                is HotReloadInProgressException -> IXposedService.HOT_RELOAD_IN_PROGRESS
+                is HotReloadProcessDiedException -> IXposedService.HOT_RELOAD_PROCESS_DIED
+                is HotReloadUnsupportedException -> IXposedService.HOT_RELOAD_UNSUPPORTED
+                else -> IXposedService.HOT_RELOAD_FAILED
+              }
+          callback?.onHotReloadResult(status, throwable.message)
+        }
   }
 
   override fun requestRemotePreferences(group: String): Bundle {

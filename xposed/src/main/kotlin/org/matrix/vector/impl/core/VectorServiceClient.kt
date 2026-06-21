@@ -4,6 +4,7 @@ import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import org.lsposed.lspd.models.Module
 import org.lsposed.lspd.service.ILSPApplicationService
+import org.lsposed.lspd.service.IHotReloadTarget
 import org.lsposed.lspd.util.Utils.Log
 
 /**
@@ -52,6 +53,17 @@ object VectorServiceClient : ILSPApplicationService, IBinder.DeathRecipient {
 
     override fun requestInjectedManagerBinder(binder: List<IBinder>): ParcelFileDescriptor? {
         return runCatching { service?.requestInjectedManagerBinder(binder) }.getOrNull()
+    }
+
+    override fun registerHotReloadTarget(
+        modulePackageName: String,
+        loadedVersionCode: Long,
+        target: IHotReloadTarget,
+    ): Long {
+        return runCatching {
+                service?.registerHotReloadTarget(modulePackageName, loadedVersionCode, target)
+            }
+            .getOrNull() ?: -1L
     }
 
     override fun asBinder(): IBinder? {
