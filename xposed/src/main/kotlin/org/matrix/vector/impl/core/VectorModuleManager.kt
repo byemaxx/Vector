@@ -4,6 +4,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Process
 import io.github.libxposed.api.XposedInterface
+import io.github.libxposed.api.XposedInterface.ExceptionMode
 import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam
 import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam
@@ -12,7 +13,9 @@ import java.io.File
 import java.lang.reflect.Array
 import java.util.Collections
 import java.util.IdentityHashMap
+import java.util.Properties
 import java.util.concurrent.atomic.AtomicLong
+import java.util.zip.ZipFile
 import org.lsposed.lspd.models.Module
 import org.lsposed.lspd.util.Utils.Log
 import org.matrix.vector.impl.VectorContext
@@ -52,16 +55,11 @@ object VectorModuleManager {
         val apkPath: String?,
     )
 
-    /**
-     * Loads a module APK, instantiates its entry classes, and binds them to the Vector framework.
-     */
     fun loadModule(module: Module, isSystemServer: Boolean, processName: String): Boolean {
         try {
             Log.d(TAG, "Loading module ${module.packageName}")
 
             val librarySearchPath = buildLibrarySearchPath(module, isSystemServer)
-
-            // Create the isolated ClassLoader for the module
             val initLoader = XposedModule::class.java.classLoader
             val moduleClassLoader =
                 VectorModuleClassLoader.loadApk(
@@ -71,7 +69,6 @@ object VectorModuleManager {
                     initLoader,
                 )
 
-            // Security/Integrity Check: Ensure the module isn't bundling its own API classes
             if (
                 moduleClassLoader.loadClass(XposedModule::class.java.name).classLoader !==
                     initLoader
@@ -80,12 +77,12 @@ object VectorModuleManager {
                 return false
             }
 
-            // Create the Context that will be injected into the module
             val vectorContext =
                 VectorContext(
                     packageName = module.packageName,
                     applicationInfo = module.applicationInfo,
-                    service = module.service, // Our IPC client
+                    service = module.service,
+                    defaultExceptionMode = resolveDefaultExceptionMode(module),
                 )
 
             // Register native entrypoints before module constructors or onModuleLoaded can load a
@@ -213,6 +210,7 @@ object VectorModuleManager {
                     packageName = module.packageName,
                     applicationInfo = module.applicationInfo,
                     service = module.service,
+                    defaultExceptionMode = resolveDefaultExceptionMode(module),
                 )
             newEntries = instantiateEntries(module, moduleClassLoader, vectorContext)
             if (newEntries.isEmpty() && module.file.moduleClassNames.isNotEmpty()) {
@@ -275,6 +273,36 @@ object VectorModuleManager {
         }
     }
 
+    /**
+     * Resolve the API101 module-wide default without extending Vector-SR's legacy daemon AIDL.
+     *
+     * Upstream 04093fd normalizes this in the daemon and transports a boolean in PreLoadedApk.
+     * Vector-SR keeps its old IPC model stable and reads the same Properties value from the module
+     * APK at generation construction time. Anything except explicit "passthrough" is protective.
+     */
+    private fun resolveDefaultExceptionMode(module: Module): ExceptionMode =
+        runCatching {
+                ZipFile(module.apkPath).use { zip ->
+                    val entry = zip.getEntry("META-INF/xposed/module.prop")
+                        ?: return@use ExceptionMode.PROTECTIVE
+                    val props = Properties()
+                    zip.getInputStream(entry).bufferedReader(Charsets.UTF_8).use { props.load(it) }
+                    if (
+                        props.getProperty("exceptionMode")
+                            ?.trim()
+                            .equals("passthrough", ignoreCase = true)
+                    ) {
+                        ExceptionMode.PASSTHROUGH
+                    } else {
+                        ExceptionMode.PROTECTIVE
+                    }
+                }
+            }
+            .onFailure {
+                Log.w(TAG, "Cannot read exceptionMode for ${module.packageName}; using protective", it)
+            }
+            .getOrDefault(ExceptionMode.PROTECTIVE)
+
     private fun isHotReloadEligible(module: Module, isSystemServer: Boolean): Boolean {
         return !module.file.legacy &&
             module.file.moduleClassNames.size == 1 &&
@@ -283,8 +311,6 @@ object VectorModuleManager {
     }
 
     private fun buildLibrarySearchPath(module: Module, isSystemServer: Boolean): String = buildString {
-        // system_server cannot map executable pages from /data/app apk_data_file. The daemon stages
-        // the current ABI's libraries under xposed_data and this path must win lookup precedence.
         if (isSystemServer) {
             module.file.nativeLibraryDir?.let { append(it).append(File.pathSeparator) }
         }
