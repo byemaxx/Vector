@@ -78,50 +78,65 @@ object Dex2OatServer {
 
   private external fun getSockPath(): String
 
-  private val selinuxObserver =
-      object :
-          FileObserver(
-              listOf(File("/sys/fs/selinux/enforce"), File("/sys/fs/selinux/policy")),
-              CLOSE_WRITE) {
-        override fun onEvent(event: Int, path: String?) {
-          synchronized(this) {
-            if (compatibility == DEX2OAT_CRASHED) {
-              stopWatching()
-              return
-            }
+  private val SELINUX_NODES = listOf("/sys/fs/selinux/enforce", "/sys/fs/selinux/policy")
 
-            val enforcing =
-                runCatching {
-                      Files.newInputStream(Paths.get("/sys/fs/selinux/enforce")).use {
-                        it.read() == '1'.code
-                      }
-                    }
-                    .getOrDefault(false)
+  /**
+   * Watches both SELinux nodes without relying on FileObserver(List<File>, int), which was added in
+   * API 29 while Vector-SR still supports API 27. The single-path constructor is available across
+   * the whole supported range and two observers are equivalent for these two fixed nodes.
+   */
+  private object SelinuxObserver {
+    private val observers: List<FileObserver> =
+        SELINUX_NODES.map { node ->
+          @Suppress("DEPRECATION")
+          object : FileObserver(node, FileObserver.CLOSE_WRITE) {
+            override fun onEvent(event: Int, path: String?) = onSelinuxEvent()
+          }
+        }
 
-            when {
-              !enforcing -> {
-                if (compatibility == DEX2OAT_OK) doMount(false)
-                compatibility = DEX2OAT_SELINUX_PERMISSIVE
-              }
-              hasSePolicyErrors() -> {
-                if (compatibility == DEX2OAT_OK) doMount(false)
-                compatibility = DEX2OAT_SEPOLICY_INCORRECT
-              }
-              compatibility != DEX2OAT_OK -> {
-                doMount(true)
-                if (notMounted()) {
-                  doMount(false)
-                  compatibility = DEX2OAT_MOUNT_FAILED
-                  enableDex2OatPropertyFallback("wrapper mount failed after SELinux observe retry")
-                  stopWatching()
-                } else {
-                  compatibility = DEX2OAT_OK
+    fun startWatching() = observers.forEach(FileObserver::startWatching)
+
+    fun stopWatching() = observers.forEach(FileObserver::stopWatching)
+  }
+
+  private fun onSelinuxEvent() {
+    synchronized(this) {
+      if (compatibility == DEX2OAT_CRASHED) {
+        SelinuxObserver.stopWatching()
+        return
+      }
+
+      val enforcing =
+          runCatching {
+                Files.newInputStream(Paths.get("/sys/fs/selinux/enforce")).use {
+                  it.read() == '1'.code
                 }
               }
-            }
+              .getOrDefault(false)
+
+      when {
+        !enforcing -> {
+          if (compatibility == DEX2OAT_OK) doMount(false)
+          compatibility = DEX2OAT_SELINUX_PERMISSIVE
+        }
+        hasSePolicyErrors() -> {
+          if (compatibility == DEX2OAT_OK) doMount(false)
+          compatibility = DEX2OAT_SEPOLICY_INCORRECT
+        }
+        compatibility != DEX2OAT_OK -> {
+          doMount(true)
+          if (notMounted()) {
+            doMount(false)
+            compatibility = DEX2OAT_MOUNT_FAILED
+            enableDex2OatPropertyFallback("wrapper mount failed after SELinux observe retry")
+            SelinuxObserver.stopWatching()
+          } else {
+            compatibility = DEX2OAT_OK
           }
         }
       }
+    }
+  }
 
   private fun hasSePolicyErrors(): Boolean {
     return SELinux.checkSELinuxAccess(
@@ -308,8 +323,8 @@ object Dex2OatServer {
       if (!ensureMountedLocked()) return
 
       compatibility = DEX2OAT_OK
-      selinuxObserver.startWatching()
-      selinuxObserver.onEvent(0, null)
+      SelinuxObserver.startWatching()
+      onSelinuxEvent()
 
       running.set(true)
       // Run the socket accept loop in an IO coroutine
@@ -323,7 +338,7 @@ object Dex2OatServer {
       serverJob?.cancel()
       serverJob = null
       cleanupSocketStateLocked()
-      selinuxObserver.stopWatching()
+      SelinuxObserver.stopWatching()
       if (disableMount && compatibility == DEX2OAT_OK) {
         doMount(false)
       }
@@ -370,9 +385,13 @@ object Dex2OatServer {
     SELinux.setFileContext(HOOKER64, xposedFile)
 
     runCatching {
-          serverSocket = LocalServerSocket(sockPath)
+          // LocalServerSocket only implements Closeable from API 28. Keep the explicit lifetime so
+          // API 27 never resolves Closeable.use on this type, while retaining SR's serverSocket
+          // field so stop()/soft-restart recovery can interrupt a blocking accept.
+          val server = LocalServerSocket(sockPath)
+          serverSocket = server
           setSockCreateContext(null)
-          serverSocket!!.use { server ->
+          try {
             while (running.get()) {
               try {
                 // This blocks until the C++ wrapper connects
@@ -390,6 +409,9 @@ object Dex2OatServer {
                 throw e
               }
             }
+          } finally {
+            runCatching { server.close() }
+            if (serverSocket === server) serverSocket = null
           }
         }
         .onFailure {
