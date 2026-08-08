@@ -23,20 +23,22 @@ import org.matrix.vector.impl.VectorLifecycleManager
 import org.matrix.vector.impl.hooks.freezeHooks
 import org.matrix.vector.impl.hooks.getActiveHookHandles
 import org.matrix.vector.impl.hooks.unfreezeHooks
-import org.matrix.vector.impl.hooks.unhookAllModuleHooks
 import org.matrix.vector.impl.utils.VectorModuleClassLoader
 import org.matrix.vector.nativebridge.NativeAPI
 
-/**
- * Responsible for loading modules into the target process. Handles ClassLoader isolation and
- * injects the framework context into the module instances.
- */
+/** Loads modern modules and owns their in-process generations. */
 object VectorModuleManager {
 
     private const val TAG = "VectorModuleManager"
     private const val ENABLE_SYSTEM_SERVER_HOT_RELOAD = false
+
     private val moduleStates = java.util.concurrent.ConcurrentHashMap<String, ModuleState>()
     private val generationCounter = AtomicLong(1)
+
+    private data class ModuleMetadata(
+        val targetApiVersion: Int,
+        val defaultExceptionMode: ExceptionMode,
+    )
 
     private data class ModuleState(
         val module: Module,
@@ -47,6 +49,7 @@ object VectorModuleManager {
         val classLoaders: Set<ClassLoader>,
         val codeIdentity: RuntimeModuleCodeIdentity,
         val generationId: Long,
+        val targetApiVersion: Int,
     )
 
     private data class RuntimeModuleCodeIdentity(
@@ -55,10 +58,52 @@ object VectorModuleManager {
         val apkPath: String?,
     )
 
-    fun loadModule(module: Module, isSystemServer: Boolean, processName: String): Boolean {
-        try {
-            Log.d(TAG, "Loading module ${module.packageName}")
+    private class HotReloadCommittedException(cause: Throwable) :
+        IllegalStateException("New module generation was committed but onHotReloaded failed", cause)
 
+    fun loadModule(module: Module, isSystemServer: Boolean, processName: String): Boolean {
+        val metadata = readModuleMetadata(module)
+        val state = buildGeneration(module, isSystemServer, processName, metadata) ?: return false
+
+        state.entries.forEach(VectorLifecycleManager.activeModules::add)
+        moduleStates[module.packageName] = state
+
+        val param =
+            object : ModuleLoadedParam {
+                override fun isSystemServer(): Boolean = isSystemServer
+
+                override fun getProcessName(): String = processName
+            }
+        state.entries.forEach { entry ->
+            runCatching { entry.onModuleLoaded(param) }
+                .onFailure { Log.e(TAG, "Error in onModuleLoaded for ${entry.javaClass.name}", it) }
+        }
+
+        if (isHotReloadEligible(state)) {
+            VectorServiceClient.registerHotReloadTarget(
+                module.packageName,
+                module.versionCode,
+                VectorHotReloadTarget,
+            )
+        }
+
+        Log.d(TAG, "Loaded module ${module.packageName} generation=${state.generationId}")
+        return true
+    }
+
+    /**
+     * Build a complete successor without publishing it or touching the currently active generation.
+     * This ordering is the API102 invariant: a failed class load/constructor can never retire old
+     * code first and leave the process with no viable generation.
+     */
+    private fun buildGeneration(
+        module: Module,
+        isSystemServer: Boolean,
+        processName: String,
+        metadata: ModuleMetadata,
+    ): ModuleState? {
+        return try {
+            Log.d(TAG, "Building module ${module.packageName}")
             val librarySearchPath = buildLibrarySearchPath(module, isSystemServer)
             val initLoader = XposedModule::class.java.classLoader
             val moduleClassLoader =
@@ -67,14 +112,14 @@ object VectorModuleManager {
                     module.file.preLoadedDexes,
                     librarySearchPath,
                     initLoader,
+                    blockLegacyApi = metadata.targetApiVersion >= 102,
                 )
 
             if (
-                moduleClassLoader.loadClass(XposedModule::class.java.name).classLoader !==
-                    initLoader
+                moduleClassLoader.loadClass(XposedModule::class.java.name).classLoader !== initLoader
             ) {
                 Log.e(TAG, "The Xposed API classes are compiled into ${module.packageName}")
-                return false
+                return null
             }
 
             val vectorContext =
@@ -82,73 +127,37 @@ object VectorModuleManager {
                     packageName = module.packageName,
                     applicationInfo = module.applicationInfo,
                     service = module.service,
-                    defaultExceptionMode = resolveDefaultExceptionMode(module),
+                    defaultExceptionMode = metadata.defaultExceptionMode,
                 )
 
-            // Register native entrypoints before module constructors or onModuleLoaded can load a
-            // library. Adapted from JingMatrix/Vector@5ff67a8; recording afterwards can miss dlopen.
-            module.file.moduleLibraryNames.forEach { libraryName ->
-                NativeAPI.recordNativeEntrypoint(libraryName)
-            }
+            // Native entrypoints must be known before an entry constructor or callback can dlopen.
+            module.file.moduleLibraryNames.forEach(NativeAPI::recordNativeEntrypoint)
 
             val entries = instantiateEntries(module, moduleClassLoader, vectorContext)
-            if (entries.isEmpty() && module.file.moduleClassNames.isNotEmpty()) {
-                Log.e(
-                    TAG,
-                    "Failed to instantiate any entries for ${module.packageName}. Total entries: ${module.file.moduleClassNames.size}"
-                )
-                return false
-            }
-            if (entries.size != module.file.moduleClassNames.size) {
-                Log.i(
-                    TAG,
-                    "Loaded ${entries.size}/${module.file.moduleClassNames.size} entries for ${module.packageName}"
-                )
-            }
-            entries.forEach { moduleInstance ->
-                VectorLifecycleManager.activeModules.add(moduleInstance)
-                runCatching {
-                        moduleInstance.onModuleLoaded(
-                            object : ModuleLoadedParam {
-                                override fun isSystemServer(): Boolean = isSystemServer
-
-                                override fun getProcessName(): String = processName
-                            }
-                        )
-                    }
-                    .onFailure {
-                        Log.e(TAG, "Error in onModuleLoaded for ${module.packageName}", it)
-                    }
-            }
-            moduleStates[module.packageName] =
-                ModuleState(
-                    module = module,
-                    packageName = module.packageName,
-                    processName = processName,
-                    isSystemServer = isSystemServer,
-                    entries = entries,
-                    classLoaders = setOf(moduleClassLoader),
-                    codeIdentity =
-                        RuntimeModuleCodeIdentity(
-                            module.packageName,
-                            module.versionCode,
-                            module.apkPath,
-                        ),
-                    generationId = generationCounter.getAndIncrement(),
-                )
-            if (isHotReloadEligible(module, isSystemServer)) {
-                VectorServiceClient.registerHotReloadTarget(
-                    module.packageName,
-                    module.versionCode,
-                    VectorHotReloadTarget,
-                )
+            if (entries.isEmpty()) {
+                Log.e(TAG, "No entry class of ${module.packageName} could be instantiated")
+                return null
             }
 
-            Log.d(TAG, "Loaded module ${module.packageName} successfully.")
-            return true
+            ModuleState(
+                module = module,
+                packageName = module.packageName,
+                processName = processName,
+                isSystemServer = isSystemServer,
+                entries = entries,
+                classLoaders = setOf(moduleClassLoader),
+                codeIdentity =
+                    RuntimeModuleCodeIdentity(
+                        module.packageName,
+                        module.versionCode,
+                        module.apkPath,
+                    ),
+                generationId = generationCounter.getAndIncrement(),
+                targetApiVersion = metadata.targetApiVersion,
+            )
         } catch (e: Throwable) {
-            Log.e(TAG, "Fatal error loading module ${module.packageName}", e)
-            return false
+            Log.e(TAG, "Fatal error building module ${module.packageName}", e)
+            null
         }
     }
 
@@ -158,66 +167,68 @@ object VectorModuleManager {
         val oldState =
             moduleStates[module.packageName]
                 ?: throw IllegalStateException("Module ${module.packageName} is not loaded")
-        if (!isHotReloadEligible(module, oldState.isSystemServer)) {
+        if (!isHotReloadEligible(oldState)) {
             throw IllegalArgumentException("Hot reload is unsupported for ${module.packageName}")
         }
 
         extras?.let { validateClassLoaderNeutralValue(it, oldState.classLoaders, "extras") }
 
+        // Only entries that have not detached are allowed to participate in the handover. Holding
+        // them in this local list keeps the old generation reachable until the new callback ends.
+        val oldEntries = oldState.entries.filter(VectorLifecycleManager::isActive)
+        if (oldEntries.isEmpty()) {
+            throw IllegalStateException("Every entry of ${module.packageName} has detached")
+        }
+
+        val newMetadata = readModuleMetadata(module)
+        if (!isHotReloadDescriptorEligible(module, newMetadata, oldState.isSystemServer)) {
+            throw IllegalArgumentException("The new generation is not API102 hot-reload compatible")
+        }
+
+        // Build the complete successor before freezing or calling any old-generation module code.
+        val newState =
+            buildGeneration(module, oldState.isSystemServer, oldState.processName, newMetadata)
+                ?: throw IllegalStateException("Cannot build a new generation of ${module.packageName}")
+        val newEntries = newState.entries
         val oldClassLoaders = oldState.classLoaders
-        var savedInstanceState: Any? = null
-        val reloadingParam =
-            object : HotReloadingParam {
-                override fun getExtras(): Bundle? = extras
 
-                override fun setSavedInstanceState(outState: Any?) {
-                    validateClassLoaderNeutralValue(outState, oldClassLoaders, "savedInstanceState")
-                    savedInstanceState = outState
-                }
-            }
-
-        var allowReload = true
-        oldState.entries.forEach { entry ->
-            if (!allowReload) return@forEach
-            allowReload =
-                runCatching { entry.onHotReloading(reloadingParam) }
-                    .onFailure {
-                        Log.e(TAG, "Error in onHotReloading for ${module.packageName}", it)
-                    }
-                    .getOrThrow()
-        }
-        if (!allowReload) {
-            Log.i(TAG, "OLD_REJECTED package=${module.packageName}")
-            throw IllegalStateException()
-        }
-
-        Log.i(TAG, "FREEZE_HOOKS package=${module.packageName}")
+        Log.i(TAG, "NEW_INSTANTIATED package=${module.packageName} generation=${newState.generationId}")
         freezeHooks(module.packageName, oldClassLoaders)
-        val oldHandles = getActiveHookHandles(module.packageName)
-        var newStateCommitted = false
-        var newEntries: List<XposedModule> = emptyList()
-        try {
-            val librarySearchPath = buildLibrarySearchPath(module, oldState.isSystemServer)
-            val moduleClassLoader =
-                VectorModuleClassLoader.loadApk(
-                    module.apkPath,
-                    module.file.preLoadedDexes,
-                    librarySearchPath,
-                    XposedModule::class.java.classLoader,
-                )
-            val vectorContext =
-                VectorContext(
-                    packageName = module.packageName,
-                    applicationInfo = module.applicationInfo,
-                    service = module.service,
-                    defaultExceptionMode = resolveDefaultExceptionMode(module),
-                )
-            newEntries = instantiateEntries(module, moduleClassLoader, vectorContext)
-            if (newEntries.isEmpty() && module.file.moduleClassNames.isNotEmpty()) {
-                throw IllegalStateException("Failed to instantiate any hot reload entry")
-            }
-            Log.i(TAG, "NEW_INSTANTIATED package=${module.packageName}")
+        Log.i(TAG, "FREEZE_HOOKS package=${module.packageName}")
 
+        var committed = false
+        try {
+            var savedInstanceState: Any? = null
+            val reloadingParam =
+                object : HotReloadingParam {
+                    override fun getExtras(): Bundle? = extras
+
+                    override fun setSavedInstanceState(outState: Any?) {
+                        validateClassLoaderNeutralValue(
+                            outState,
+                            oldClassLoaders,
+                            "savedInstanceState",
+                        )
+                        savedInstanceState = outState
+                    }
+                }
+
+            val accepted =
+                oldEntries.all { entry ->
+                    runCatching { entry.onHotReloading(reloadingParam) }
+                        .onFailure {
+                            Log.e(TAG, "Error in onHotReloading for ${entry.javaClass.name}", it)
+                        }
+                        .getOrThrow()
+                }
+            if (!accepted) {
+                Log.i(TAG, "OLD_REJECTED package=${module.packageName}")
+                throw IllegalStateException("Module refused hot reload")
+            }
+
+            // Snapshot after the freeze and after old code had its opportunity to unhook. The new
+            // generation can migrate these handles with native replaceCallback(), atomically.
+            val oldHandles = getActiveHookHandles(module.packageName)
             val param =
                 object : HotReloadedParam {
                     override fun isSystemServer(): Boolean = oldState.isSystemServer
@@ -230,81 +241,91 @@ object VectorModuleManager {
 
                     override fun getOldHookHandles(): List<XposedInterface.HookHandle> = oldHandles
                 }
-            moduleStates[module.packageName] =
-                ModuleState(
-                    module = module,
-                    packageName = module.packageName,
-                    processName = oldState.processName,
-                    isSystemServer = oldState.isSystemServer,
-                    entries = newEntries,
-                    classLoaders = setOf(moduleClassLoader),
-                    codeIdentity =
-                        RuntimeModuleCodeIdentity(
-                            module.packageName,
-                            module.versionCode,
-                            module.apkPath,
-                        ),
-                    generationId = generationCounter.getAndIncrement(),
-                )
-            newStateCommitted = true
+
+            // There is intentionally no rollback past this point. onHotReloaded is allowed to
+            // replace hooks; restoring old entries after one replacement would combine old module
+            // lifecycle state with new native callbacks.
+            moduleStates[module.packageName] = newState
             VectorServiceClient.updatePendingHotReloadVersion(
                 module.packageName,
                 module.versionCode,
             )
-            Log.i(TAG, "COMMITTED package=${module.packageName} version=${module.versionCode}")
-            oldState.entries.forEach(VectorLifecycleManager::detach)
-            newEntries.forEach { entry ->
-                VectorLifecycleManager.activeModules.add(entry)
+            committed = true
+            Log.i(TAG, "COMMITTED package=${module.packageName} generation=${newState.generationId}")
+
+            oldEntries.forEach(VectorLifecycleManager::detach)
+            newEntries.forEach(VectorLifecycleManager.activeModules::add)
+
+            var callbackFailure: Throwable? = null
+            for (entry in newEntries) {
+                if (!VectorLifecycleManager.isActive(entry)) continue
                 runCatching { entry.onHotReloaded(param) }
-                    .onFailure {
-                        Log.e(TAG, "HOT_RELOADED_CALLBACK_FAILED package=${module.packageName}", it)
+                    .onFailure { t ->
+                        if (callbackFailure == null) callbackFailure = t
+                        Log.e(TAG, "HOT_RELOADED_CALLBACK_FAILED ${entry.javaClass.name}", t)
                     }
+                if (callbackFailure != null) break
             }
+
+            callbackFailure?.let { throw HotReloadCommittedException(it) }
         } finally {
-            if (newStateCommitted) {
-                oldState.entries.forEach(VectorLifecycleManager::detach)
-            } else {
-                Log.i(TAG, "PRECOMMIT_FAILED package=${module.packageName}")
+            if (!committed) {
+                // Candidate entries were never published. They have no lifecycle ownership and can
+                // become unreachable after this frame; importantly, old hooks/state stay intact.
                 newEntries.forEach(VectorLifecycleManager::detach)
-                unhookAllModuleHooks(module.packageName, oldHandles.toSet())
+                Log.i(TAG, "PRECOMMIT_FAILED package=${module.packageName}")
+            } else {
+                oldEntries.forEach(VectorLifecycleManager::detach)
             }
             unfreezeHooks(module.packageName)
             Log.i(TAG, "UNFROZEN package=${module.packageName}")
         }
     }
 
-    /**
-     * Resolve the API101 module-wide default without extending Vector-SR's legacy daemon AIDL.
-     *
-     * Upstream 04093fd normalizes this in the daemon and transports a boolean in PreLoadedApk.
-     * Vector-SR keeps its old IPC model stable and reads the same Properties value from the module
-     * APK at generation construction time. Anything except explicit "passthrough" is protective.
-     */
-    private fun resolveDefaultExceptionMode(module: Module): ExceptionMode =
+    private fun readModuleMetadata(module: Module): ModuleMetadata =
         runCatching {
                 ZipFile(module.apkPath).use { zip ->
-                    val entry = zip.getEntry("META-INF/xposed/module.prop")
-                        ?: return@use ExceptionMode.PROTECTIVE
                     val props = Properties()
-                    zip.getInputStream(entry).bufferedReader(Charsets.UTF_8).use { props.load(it) }
-                    if (
-                        props.getProperty("exceptionMode")
-                            ?.trim()
-                            .equals("passthrough", ignoreCase = true)
-                    ) {
-                        ExceptionMode.PASSTHROUGH
-                    } else {
-                        ExceptionMode.PROTECTIVE
+                    zip.getEntry("META-INF/xposed/module.prop")?.let { entry ->
+                        runCatching { zip.getInputStream(entry).use { props.load(it) } }
+                            .onFailure {
+                                Log.w(TAG, "Malformed module.prop in ${module.apkPath}", it)
+                            }
                     }
+                    val rawTarget = props.getProperty("targetApiVersion")?.trim().orEmpty()
+                    val targetApi = rawTarget.takeWhile { it.isDigit() }.toIntOrNull() ?: 0
+                    val mode =
+                        if (
+                            props.getProperty("exceptionMode")
+                                ?.trim()
+                                .equals("passthrough", ignoreCase = true)
+                        ) {
+                            ExceptionMode.PASSTHROUGH
+                        } else {
+                            ExceptionMode.PROTECTIVE
+                        }
+                    ModuleMetadata(targetApi, mode)
                 }
             }
             .onFailure {
-                Log.w(TAG, "Cannot read exceptionMode for ${module.packageName}; using protective", it)
+                Log.w(TAG, "Cannot read module metadata for ${module.packageName}", it)
             }
-            .getOrDefault(ExceptionMode.PROTECTIVE)
+            .getOrDefault(ModuleMetadata(0, ExceptionMode.PROTECTIVE))
 
-    private fun isHotReloadEligible(module: Module, isSystemServer: Boolean): Boolean {
-        return !module.file.legacy &&
+    private fun isHotReloadEligible(state: ModuleState): Boolean =
+        isHotReloadDescriptorEligible(
+            state.module,
+            ModuleMetadata(state.targetApiVersion, ExceptionMode.PROTECTIVE),
+            state.isSystemServer,
+        )
+
+    private fun isHotReloadDescriptorEligible(
+        module: Module,
+        metadata: ModuleMetadata,
+        isSystemServer: Boolean,
+    ): Boolean {
+        return metadata.targetApiVersion >= 102 &&
+            !module.file.legacy &&
             module.file.moduleClassNames.size == 1 &&
             module.file.moduleLibraryNames.isEmpty() &&
             (!isSystemServer || ENABLE_SYSTEM_SERVER_HOT_RELOAD)
@@ -337,15 +358,19 @@ object VectorModuleManager {
                         return@runCatching
                     }
 
-                    val constructor = runCatching {
-                        moduleClass.getDeclaredConstructor()
-                    }.onFailure { e ->
-                        if (e is NoSuchMethodException) {
-                            Log.i(TAG, "Skipping incompatible modern entry $className (missing no-arg constructor)")
-                        } else {
-                            Log.e(TAG, "Failed to get constructor for $className", e)
-                        }
-                    }.getOrNull() ?: return@runCatching
+                    val constructor =
+                        runCatching { moduleClass.getDeclaredConstructor() }
+                            .onFailure { e ->
+                                if (e is NoSuchMethodException) {
+                                    Log.i(
+                                        TAG,
+                                        "Skipping incompatible modern entry $className (missing no-arg constructor)",
+                                    )
+                                } else {
+                                    Log.e(TAG, "Failed to get constructor for $className", e)
+                                }
+                            }
+                            .getOrNull() ?: return@runCatching
 
                     constructor.isAccessible = true
                     val moduleInstance = constructor.newInstance() as XposedModule
@@ -426,8 +451,7 @@ object VectorModuleManager {
     ): Boolean {
         if (value == null || !seen.add(value)) return false
         if (value is ClassLoader && value in oldClassLoaders) return true
-        if (value is Class<*> && value.classLoader?.let { it in oldClassLoaders } == true)
-            return true
+        if (value is Class<*> && value.classLoader?.let { it in oldClassLoaders } == true) return true
         if (value.javaClass.classLoader?.let { it in oldClassLoaders } == true) return true
         if (value is Bundle) {
             return value.keySet().any { key ->
