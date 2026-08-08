@@ -292,8 +292,28 @@ object VectorModuleManager {
                                 Log.w(TAG, "Malformed module.prop in ${module.apkPath}", it)
                             }
                     }
-                    val rawTarget = props.getProperty("targetApiVersion")?.trim().orEmpty()
-                    val targetApi = rawTarget.takeWhile { it.isDigit() }.toIntOrNull() ?: 0
+
+                    fun readLeadingInt(name: String): Int? =
+                        props.getProperty(name)
+                            ?.trim()
+                            ?.takeWhile { it.isDigit() }
+                            ?.toIntOrNull()
+
+                    val canonicalTarget = readLeadingInt("targetApiVersion")
+                    val targetApi =
+                        canonicalTarget
+                            ?: readLeadingInt("api")
+                            ?: readLeadingInt("minApiVersion")
+                            ?: readLeadingInt("minApi")
+                            ?: 0
+                    if (canonicalTarget == null && targetApi >= 101) {
+                        Log.w(
+                            TAG,
+                            "${module.packageName} uses legacy Vector-SR API metadata; " +
+                                "prefer targetApiVersion=$targetApi in module.prop",
+                        )
+                    }
+
                     val mode =
                         if (
                             props.getProperty("exceptionMode")
