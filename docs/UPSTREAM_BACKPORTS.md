@@ -30,7 +30,7 @@ Adaptation: <why a direct cherry-pick was not used>
 | `73571c7f8243295ddd2d5de62cffb4f6cbf5c3dc` | Ported | Android 17 `IServiceConnection.connected` four-argument overload and `IBinderSession` stub. |
 | `fbcff2f5087209e5667c40f45f2a8ac7a7a6f2b6` | Ported/adapted | Legacy unsafe-hook refusal was blob-compatible; modern refusal was adapted around SR's hook registry. |
 | `92f3e60ea9504c9064cc3bca287456d196a5937c` | Behavior ported | JNI pending-exception cleanup, Zygisk Java-entry result handling, and dex2oat `GetStringUTFChars` failure handling are present. |
-| `73eba3ac0b6897144be8487e2a86c71449558949` | Runtime portion ported | `XResources` lambda/compute removal is present. The upstream dexlib2 release-build isolation task is not imported; new-Manager logging/archive changes are intentionally excluded. |
+| `73eba3ac0b6897144be8487e2a86c71449558949` | Runtime + adapted guard ported | `XResources` lambda/compute removal is present. Vector-SR also wires a zero-new-dependency source-level `checkXResourcesIsolationRelease` guard into `preReleaseBuild`; upstream's stronger post-R8 dexlib2 verifier is intentionally not imported. New-Manager logging/archive changes are excluded. |
 | `44552398db793a6d02b33acbc66978966950ffef` | Ported | Android 17 static-final reflective write support is integrated into the existing native HookBridge. |
 | `5ff67a87cb70414d8c52b59f97f56a9de257ee49` | Ported/adapted | `system_server` native-library staging is isolated in `NativeLibraryStager` so it does not own or alter the SR reinjection lease lifecycle. |
 | `04093fdbf4cff2426cd1b320d5e568282d0e2a77` | Selectively ported | API101 hook-class-initializer, invoker/chain, exception-mode, preferences, late-system_server, package semantics and scope correctness are selectively adapted without the new Manager IPC model. |
@@ -39,7 +39,7 @@ Adaptation: <why a direct cherry-pick was not used>
 | `4fcea0e528e737efb5fdadf02ee7fd47d55d527b` | Ported/adapted | Scope requests are batched to one prompt/result with `system` handling, durable approval, first-answer-wins and bounded pending requests while retaining the old receiver/IPC namespace. |
 | `f2ef0b20b39ed869fb54be2cb1359a96042dcb40` | Daemon behavior selectively ported | Module-update notifications posted in user 0 prefer a user-0 Manager destination when the module is installed there; unrelated Compose scope UI/navigation changes are excluded. |
 | `e8bec6bd714d0f277c8134096501ce36902b32fd` | Ported/adapted | External provider references are released, binder delivery is moved off the UID observer, failures are throttled, binder death is tracked, Android 8.1/9 signatures are handled, and the API27-37 `IUidObserver` method union is declared/overridden. |
-| `f5655426b28a2c9cf8c6d310643d1f0bdc38bdf4` | Runtime compatibility selectively ported | API27-safe package version-code reads, SELinux `FileObserver` construction and `LocalServerSocket` lifetime are applied to the daemon. Dependency, AGP/NDK, signing, warning cleanup and new-Manager changes from the same upstream commit are deliberately excluded. |
+| `f5655426b28a2c9cf8c6d310643d1f0bdc38bdf4` | Daemon runtime compatibility selectively ported | API27-safe SELinux `FileObserver` construction, explicit `LocalServerSocket` lifetime, and the pre-Q secret-code action literal are applied without importing dependency, AGP/NDK, signing, warning-cleanup or new-Manager changes from the same upstream commit. |
 
 ## Vector-SR-specific compatibility work
 
@@ -49,6 +49,7 @@ The integration branch also contains fixes that are not claimed as verbatim upst
 - `BaseInvoker` uses the canonical API102 native callback snapshot as the invocation boundary; a callback already snapshotted cannot disappear because another thread replaced its handle.
 - The API102 generation map swap is treated as the irreversible commit point. If later new-generation callback work fails, the retired generation remains frozen rather than being incorrectly re-enabled.
 - Device-wide package removal passes a nullable user to `PreferenceStore.deleteModulePrefs`, so preferences from all Android users are actually removed. This intentionally corrects the current upstream call-site typo where `targetUser` is computed but `userId` is still passed.
+- `ConfigCache` reads `PackageInfo` version codes through an API27-safe accessor. Current upstream still uses `longVersionCode` directly in this path, so this is recorded as Vector-SR hardening rather than attributed as a verbatim `f5655426` backport.
 - The API27 dex2oat compatibility changes are fitted around Vector-SR's existing stale-mount/property-fallback/soft-restart recovery instead of replacing that recovery with upstream's file wholesale.
 
 ## Intentionally retained Vector-SR architecture
