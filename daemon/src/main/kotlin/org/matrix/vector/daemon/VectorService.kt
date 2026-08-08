@@ -10,7 +10,6 @@ import android.os.Binder
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
-import android.provider.Telephony
 import android.telephony.TelephonyManager
 import android.util.Log
 import hidden.HiddenApiBridge
@@ -33,10 +32,14 @@ private const val TAG = "VectorService"
 object VectorService : IDaemonService.Stub() {
 
   private var bootCompleted = false
-  @Suppress("DEPRECATION")
+
+  /**
+   * The public pre-Q Telephony.Sms.Intents constant only exists from API 28, while Vector-SR still
+   * supports API 27. Android 8.1 broadcasts the same literal value from its hidden TelephonyIntents.
+   */
   private val ACTION_SECRET_CODE =
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) TelephonyManager.ACTION_SECRET_CODE
-      else Telephony.Sms.Intents.SECRET_CODE_ACTION
+      else "android.provider.Telephony.SECRET_CODE"
 
   override fun dispatchSystemServerContext(
       appThread: IBinder?,
