@@ -53,9 +53,18 @@ object ManagerService : ILSPManagerService.Stub() {
 
   class ManagerGuard(private val binder: IBinder, val pid: Int, val uid: Int) :
       IBinder.DeathRecipient {
+    // system_server dispatches the 3-argument callback up to Android 16 and the
+    // 4-argument one from Android 17 on.
     private val connection =
         object : android.app.IServiceConnection.Stub() {
           override fun connected(name: ComponentName?, service: IBinder?, dead: Boolean) {}
+
+          override fun connected(
+              name: ComponentName?,
+              service: IBinder?,
+              session: android.app.IBinderSession?,
+              dead: Boolean
+          ) {}
         }
 
     init {
@@ -171,14 +180,11 @@ object ManagerService : ILSPManagerService.Stub() {
   private fun fixWebViewPermissions(file: File, targetUid: Int) {
     if (!file.exists()) return
 
-    // Set the SELinux label that allows apps to read/write shared xposed data
     SELinux.setFileContext(file.absolutePath, "u:object_r:xposed_file:s0")
 
-    // Change ownership to the target UID (e.g., 2000)
     runCatching { android.system.Os.chown(file.absolutePath, targetUid, targetUid) }
         .onFailure { Log.e(TAG, "Failed to chown ${file.path}", it) }
 
-    // Recurse into directories
     if (file.isDirectory) {
       file.listFiles()?.forEach { fixWebViewPermissions(it, targetUid) }
     }
@@ -306,7 +312,6 @@ object ManagerService : ILSPManagerService.Stub() {
           }
         }
 
-    // Using reflection to wrap the AIDL stub into an Android IntentSender
     val intentSender =
         runCatching {
               val constructor =
@@ -317,7 +322,7 @@ object ManagerService : ILSPManagerService.Stub() {
             .getOrNull() ?: return false
 
     val pkg = VersionedPackage(packageName, PackageManager.VERSION_CODE_HIGHEST)
-    val flag = if (userId == -1) 0x00000002 else 0 // DELETE_ALL_USERS flag
+    val flag = if (userId == -1) 0x00000002 else 0
 
     runCatching {
           packageManager
@@ -415,7 +420,7 @@ object ManagerService : ILSPManagerService.Stub() {
     FileSystem.getLogs(zipFd)
   }
 
-  override fun restartFor(intent: Intent) {} // No-op matching original
+  override fun restartFor(intent: Intent) {}
 
   override fun enableStatusNotification() = PreferenceStore.isStatusNotificationEnabled()
 
