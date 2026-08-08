@@ -151,6 +151,12 @@ object NotificationManager {
         .onFailure { Log.e(TAG, "Failed to cancel notification $tag", it) }
   }
 
+  /** The activation reminder is transient; the restart reminder remains valid after activation. */
+  private fun notActivatedTag(modulePkg: String) = "$modulePkg:not-activated"
+
+  /** Cancel only the stale "module is not activated yet" notice. */
+  fun cancelModuleUpdated(modulePkg: String) = cancelByTag(notActivatedTag(modulePkg))
+
   fun cancelScopeRequest(modulePkg: String, moduleUserId: Int, scopePkgs: List<String>) {
     cancelByTag(scopeTag(modulePkg, moduleUserId, scopePkgs))
   }
@@ -319,13 +325,19 @@ object NotificationManager {
             userName,
         )
 
+    // Notifications are posted as user 0. Prefer a user-0 destination whenever the module exists
+    // there; otherwise retain the triggering profile for modules installed only in a secondary user.
+    val linkUserId =
+        if (packageManager?.isPackageAvailable(modulePackageName, 0, true) == true) 0
+        else moduleUserId
+
     val intent =
         Intent(openManagerAction).apply {
           setPackage("android")
           data =
               Uri.Builder()
                   .scheme("module")
-                  .encodedAuthority("$modulePackageName:$moduleUserId")
+                  .encodedAuthority("$modulePackageName:$linkUserId")
                   .build()
         }
     val pi =
@@ -345,9 +357,11 @@ object NotificationManager {
             .apply { extras.putString("android.substName", BuildConfig.FRAMEWORK_NAME) }
 
     createChannels()
+    // Keep the two meanings separate: activation makes only the "not activated" notice stale;
+    // "module updated, restart scoped apps" remains true until the user actually restarts them.
+    val tag = if (enabled) modulePackageName else notActivatedTag(modulePackageName)
     runCatching {
-      nm?.enqueueNotificationWithTag(
-          "android", opPkg, modulePackageName, modulePackageName.hashCode(), notif, 0)
+      nm?.enqueueNotificationWithTag("android", opPkg, tag, tag.hashCode(), notif, 0)
     }
   }
 }
