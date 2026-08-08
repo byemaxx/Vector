@@ -28,22 +28,24 @@ internal abstract class BaseInvoker<T : Invoker<T, U>, U : Executable>(
     /** Resolves the current [type] and executes the underlying method. */
     protected fun proceedInvocation(thisObject: Any?, args: Array<out Any?>): Any? {
         return when (val currentType = type) {
-            // Both paths below report a target exception wrapped and their own argument failures
-            // unwrapped, matching Invoker#invoke / Method#invoke semantics.
+            // Both paths below already report a target exception wrapped and their own argument
+            // failures unwrapped, which is what Invoker#invoke documents.
             is Invoker.Type.Origin -> dispatchOriginal(thisObject, args)
             is Invoker.Type.Chain -> {
                 val snapshots =
                     HookBridge.callbackSnapshot(VectorHookRecord::class.java, executable)
+                        // The executable carries no hooks, so there is no chain to enter. Invokers
+                        // default to Type.Chain.FULL, so this is the ordinary case for a module
+                        // that obtains an invoker for a method it has not hooked.
                         ?: return dispatchOriginal(thisObject, args)
 
                 @Suppress("UNCHECKED_CAST")
                 val allModernHooks = snapshots[0] as Array<VectorHookRecord>
                 val legacyHooks = snapshots[1]
 
+                // Filter hooks to respect the maxPriority requested by the module
                 val filteredHooks =
-                    allModernHooks
-                        .filter { it.isActive() && it.priority <= currentType.maxPriority }
-                        .toTypedArray()
+                    allModernHooks.filter { it.priority <= currentType.maxPriority }.toTypedArray()
 
                 val terminal: (Any?, Array<Any?>) -> Any? = { tObj, tArgs ->
                     val delegate = VectorBootstrap.delegate
@@ -58,6 +60,10 @@ internal abstract class BaseInvoker<T : Invoker<T, U>, U : Executable>(
 
                 val chain =
                     VectorChain(executable, thisObject, arrayOf(*args), filteredHooks, 0, terminal)
+                // Chain#proceed is documented to hand hookers the exception itself, while
+                // Invoker#invoke is documented against Method#invoke, which reports it wrapped, so
+                // the wrapping belongs at this boundary rather than inside the chain. The paths
+                // that skip the chain get this from the dispatch itself and are not re-wrapped.
                 try {
                     chain.proceed()
                 } catch (e: InvocationTargetException) {
@@ -71,8 +77,11 @@ internal abstract class BaseInvoker<T : Invoker<T, U>, U : Executable>(
 
     /** Invokes the original executable, reporting a target exception as Method#invoke does. */
     private fun dispatchOriginal(thisObject: Any?, args: Array<out Any?>): Any? {
-        // invokeOriginalMethod dispatches through a cached Method.invoke id. For an unhooked
-        // Constructor the reflected receiver has a different class, so use the non-virtual path.
+        // invokeOriginalMethod dispatches through a cached Method.invoke id. For a hooked
+        // executable that is applied to lsplant's backup Method, which is correct. For an
+        // executable with no hook item at all it is applied to the reflected object we passed in
+        // — and if that is a Constructor, the id belongs to a different class. Route those
+        // through the non-virtual path instead, which is what invokeSpecial already uses.
         if (
             executable is Constructor<*> &&
                 HookBridge.callbackSnapshot(VectorHookRecord::class.java, executable) == null
@@ -91,7 +100,10 @@ internal abstract class BaseInvoker<T : Invoker<T, U>, U : Executable>(
         return HookBridge.invokeOriginalMethod(executable, thisObject, *args)
     }
 
-    /** Chain#proceed exposes the target exception itself; remove reflection's wrapper here. */
+    /**
+     * The chain terminal. Chain#proceed is documented to throw whatever the original executable
+     * threw, so the reflective wrapper comes off here rather than at the public boundary.
+     */
     private fun invokeOriginal(thisObject: Any?, args: Array<out Any?>): Any? =
         try {
             dispatchOriginal(thisObject, args)
@@ -144,11 +156,15 @@ internal class VectorMethodInvoker(method: Method) :
     }
 }
 
-/** Invoker implementation specifically for [Constructor] types. */
+/**
+ * Invoker implementation specifically for [Constructor] types. Extends capabilities to allocate and
+ * initialize objects safely.
+ */
 internal class VectorCtorInvoker<T : Any>(constructor: Constructor<T>) :
     BaseInvoker<CtorInvoker<T>, Constructor<T>>(constructor), CtorInvoker<T> {
 
     override fun invoke(thisObject: Any?, vararg args: Any?): Any? {
+        // Invoking a constructor as a method returns nothing (void/null)
         proceedInvocation(thisObject, args)
         return null
     }
@@ -166,7 +182,9 @@ internal class VectorCtorInvoker<T : Any>(constructor: Constructor<T>) :
 
     @Suppress("UNCHECKED_CAST")
     override fun newInstance(vararg args: Any?): T {
+        // Allocate memory without invoking <init>
         val obj = HookBridge.allocateObject(executable.declaringClass)
+        // Drive the invocation (origin or chain) utilizing the allocated object
         proceedInvocation(obj, args)
         return obj
     }
