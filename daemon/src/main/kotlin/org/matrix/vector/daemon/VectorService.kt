@@ -325,6 +325,7 @@ object VectorService : IDaemonService.Stub() {
       Log.d(TAG, "Manager updated")
       ConfigCache.updateManager(isRemovedAction)
     }
+
     if (moduleName != null) {
       val notifyIntent =
           Intent(ACTION_MANAGER_NOTIFICATION).apply {
