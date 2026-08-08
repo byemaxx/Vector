@@ -124,6 +124,14 @@ public interface IActivityManager extends IInterface {
 
     ContentProviderHolder getContentProviderExternal(String name, int userId, IBinder token) throws RemoteException;
 
+    // Added to pair every getContentProviderExternal handle with its platform release. These
+    // declarations mirror the API split used by JingMatrix/Vector@e8bec6b while retaining the
+    // additional hidden methods required by Vector-SR's old Manager/system helpers.
+    void removeContentProviderExternal(String name, IBinder token) throws RemoteException;
+
+    @RequiresApi(29)
+    void removeContentProviderExternalAsUser(String name, IBinder token, int userId) throws RemoteException;
+
     Configuration getConfiguration() throws RemoteException;
 
     void registerUidObserver(IUidObserver observer, int which, int cutpoint, String callingPackage) throws RemoteException;

@@ -4,9 +4,11 @@ import android.content.AttributionSource
 import android.os.Binder
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import android.os.Parcelable
 import android.os.RemoteException
+import android.os.SystemClock
 import android.util.Log
 import io.github.libxposed.service.HookedProcess
 import io.github.libxposed.service.IHotReloadCallback
@@ -16,6 +18,7 @@ import java.io.Serializable
 import java.util.Collections
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import org.lsposed.lspd.models.Module
 import org.matrix.vector.daemon.BuildConfig
 import org.matrix.vector.daemon.data.ConfigCache
@@ -31,39 +34,149 @@ private const val TAG = "VectorModuleService"
 class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
 
   companion object {
+    /** UIDs whose current module-app process successfully received this service binder. */
     private val uidSet = ConcurrentHashMap.newKeySet<Int>()
+
+    /** UIDs with a delivery running so ACTIVE/CACHED/IDLE observer events cannot schedule duplicates. */
+    private val sending = ConcurrentHashMap.newKeySet<Int>()
+
+    /** Keeps the provider proxy and DeathRecipient alive until the recipient process dies. */
+    private val deliveries = ConcurrentHashMap<Int, Pair<IBinder, IBinder.DeathRecipient>>()
+
     private val serviceMap = Collections.synchronizedMap(WeakHashMap<Module, ModuleService>())
+
+    private data class FailureRun(val count: Int, val atElapsed: Long)
+
+    private val binderFailures = ConcurrentHashMap<Int, FailureRun>()
+    private const val MAX_CONSECUTIVE_BINDER_FAILURES = 3
+    private const val BINDER_RETRY_COOLDOWN_MS = 60_000L
+    private const val BINDER_FAILURE_RUN_MS = 10 * BINDER_RETRY_COOLDOWN_MS
+
+    /**
+     * getContentProviderExternal may block while AMS starts/waits for the module app. Never perform
+     * that work on the IUidObserver binder thread, where one broken module would delay every UID.
+     */
+    private val binderExecutor =
+        Executors.newCachedThreadPool { r -> Thread(r, "vector-module-binder") }
 
     fun uidClear() {
       uidSet.clear()
     }
 
     fun uidStarts(uid: Int) {
-      if (uidSet.add(uid)) {
-        val module = ConfigCache.getModuleByUid(uid)
-        if (module?.file?.legacy == false) {
-          val service = serviceMap.getOrPut(module) { ModuleService(module) }
-          service.sendBinder(uid)
-        }
+      if (uid in uidSet || !sending.add(uid)) return
+
+      val module = ConfigCache.getModuleByUid(uid)
+      if (module?.file?.legacy != false) {
+        sending.remove(uid)
+        return
+      }
+      if (isThrottled(uid)) {
+        sending.remove(uid)
+        return
+      }
+
+      val service = serviceMap.getOrPut(module) { ModuleService(module) }
+      runCatching {
+            binderExecutor.execute {
+              try {
+                val delivered = service.sendBinder(uid)
+                if (delivered != null) {
+                  uidSet.add(uid)
+                  binderFailures.remove(uid)
+                  linkDelivery(uid, delivered)
+                } else {
+                  recordFailure(uid, module.packageName)
+                }
+              } finally {
+                sending.remove(uid)
+              }
+            }
+          }
+          .onFailure {
+            sending.remove(uid)
+            Log.w(TAG, "Could not schedule binder delivery for ${module.packageName}", it)
+          }
+    }
+
+    /**
+     * UID_GONE is not enough: another process under the same UID may survive while the process that
+     * received this binder dies. Watching the provider binder allows the restarted module process
+     * to become eligible for delivery again without holding an external provider reference.
+     */
+    private fun linkDelivery(uid: Int, provider: IBinder) {
+      val recipient = IBinder.DeathRecipient { uidSet.remove(uid) }
+      runCatching {
+            provider.linkToDeath(recipient, 0)
+            deliveries.put(uid, provider to recipient)?.let { (old, previous) ->
+              runCatching { old.unlinkToDeath(previous, 0) }
+            }
+          }
+          .onFailure { uidSet.remove(uid) }
+    }
+
+    private fun isThrottled(uid: Int): Boolean {
+      val run = binderFailures[uid] ?: return false
+      if (run.count < MAX_CONSECUTIVE_BINDER_FAILURES) return false
+      return SystemClock.elapsedRealtime() - run.atElapsed < BINDER_RETRY_COOLDOWN_MS
+    }
+
+    private fun recordFailure(uid: Int, modulePkg: String) {
+      var crossed = false
+      binderFailures.compute(uid) { _, previous ->
+        val now = SystemClock.elapsedRealtime()
+        val count =
+            if (previous == null || now - previous.atElapsed >= BINDER_FAILURE_RUN_MS) {
+              1
+            } else {
+              minOf(previous.count + 1, MAX_CONSECUTIVE_BINDER_FAILURES)
+            }
+        crossed = count == MAX_CONSECUTIVE_BINDER_FAILURES && (previous?.count ?: 0) < count
+        FailureRun(count, now)
+      }
+      if (crossed) {
+        Log.w(
+            TAG,
+            "$modulePkg/$uid failed to take its binder $MAX_CONSECUTIVE_BINDER_FAILURES times in " +
+                "a row; retrying at most once every ${BINDER_RETRY_COOLDOWN_MS / 1000}s",
+        )
       }
     }
 
     fun uidGone(uid: Int) {
       uidSet.remove(uid)
+      sending.remove(uid)
+      deliveries.remove(uid)?.let { (binder, recipient) ->
+        runCatching { binder.unlinkToDeath(recipient, 0) }
+      }
     }
   }
 
-  private fun sendBinder(uid: Int) {
+  /**
+   * Forces the module app to receive this service through its ContentProvider and immediately gives
+   * AMS's external provider reference back. This is adapted from JingMatrix/Vector@e8bec6b.
+   *
+   * @return the provider binder if the module app acknowledged delivery; null otherwise.
+   */
+  private fun sendBinder(uid: Int): IBinder? {
     val name = loadedModule.packageName
-    runCatching {
-          val userId = uid / PER_USER_RANGE
-          val authority = name + AUTHORITY_SUFFIX
+    val userId = uid / PER_USER_RANGE
+    val authority = name + AUTHORITY_SUFFIX
+    val token = Binder()
+
+    return runCatching {
+          // Q replaced the three-argument hidden API with a tagged four-argument form. Calling the
+          // wrong signature is a NoSuchMethodError on the other side of that API boundary.
           val provider =
-              activityManager?.getContentProviderExternal(authority, userId, null, null)?.provider
+              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                activityManager?.getContentProviderExternal(authority, userId, token, "vector")
+              } else {
+                activityManager?.getContentProviderExternal(authority, userId, token)
+              }?.provider
 
           if (provider == null) {
             Log.d(TAG, "No service provider for $name")
-            return
+            return@runCatching null
           }
 
           val extra = Bundle().apply { putBinder("binder", asBinder()) }
@@ -74,7 +187,8 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
                     authority,
                     SEND_BINDER,
                     null,
-                    extra)
+                    extra,
+                )
               } else if (Build.VERSION.SDK_INT == Build.VERSION_CODES.R) {
                 provider.call("android", null, authority, SEND_BINDER, null, extra)
               } else if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
@@ -83,10 +197,39 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
                 provider.call("android", SEND_BINDER, null, extra)
               }
 
-          if (reply != null) Log.d(TAG, "Sent module binder to $name")
-          else Log.w(TAG, "Failed to send module binder to $name")
+          if (reply != null) {
+            Log.d(TAG, "Sent module binder to $name")
+            provider.asBinder()
+          } else {
+            Log.w(TAG, "Failed to send module binder to $name")
+            null
+          }
         }
         .onFailure { Log.w(TAG, "Failed to send module binder for uid $uid", it) }
+        // AMS records the external handle before waiting for provider publication, so release on
+        // success, crash and timeout alike. Otherwise module apps remain at ext-provider foreground
+        // priority and failed launches can be restarted repeatedly.
+        .also { releaseProvider(authority, token, userId) }
+        .getOrNull()
+  }
+
+  /** Gives back the exact external provider handle acquired in [sendBinder]. */
+  private fun releaseProvider(authority: String, token: Binder, userId: Int) {
+    // API 27/28 cannot name the user when releasing. Releasing a secondary user's authority through
+    // the user-0 form could decrement the wrong provider record; the token remains the safety net.
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && userId != 0) {
+      Log.d(TAG, "Cannot explicitly release $authority in user $userId before Android Q")
+      return
+    }
+
+    runCatching {
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            activityManager?.removeContentProviderExternalAsUser(authority, token, userId)
+          } else {
+            activityManager?.removeContentProviderExternal(authority, token)
+          }
+        }
+        .onFailure { Log.w(TAG, "Failed to release provider reference for $authority", it) }
   }
 
   private fun ensureModule(): Int {
@@ -116,15 +259,12 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
 
   override fun getScope(): List<String> {
     val userId = ensureModule()
-    // A module copy sees only its own user's app scopes plus the device-global system scope. This
-    // is the API102 multi-user ownership boundary; returning all rows leaks another user's scope.
     return ConfigCache.getModuleScope(loadedModule.packageName)
         ?.filter { it.userId == userId || it.packageName == "system" }
         ?.map { it.packageName }
         ?.distinct() ?: emptyList()
   }
 
-  /** One API request is one prompt and one callback, even when it names several packages. */
   override fun requestScope(packages: List<String>, callback: IXposedScopeCallback) {
     val userId = ensureModule()
     val requested = packages.distinct().sorted()
@@ -133,8 +273,6 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
       return
     }
 
-    // A fixed scope is a daemon policy, not a Manager UI hint. Reject an attempted expansion before
-    // asking the user; ModuleDatabase remains the final write boundary for races/other callers.
     ConfigCache.staticScopeOf(loadedModule.packageName)?.let { claimed ->
       val beyond = requested.filterNot(claimed::contains)
       if (beyond.isNotEmpty()) {
