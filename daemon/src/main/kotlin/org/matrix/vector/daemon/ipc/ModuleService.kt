@@ -53,10 +53,6 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
     }
   }
 
-  /**
-   * Forges a ContentProvider call to force the module's target app process to receive this Binder
-   * IPC endpoint without standard Context.bindService() limits.
-   */
   private fun sendBinder(uid: Int) {
     val name = loadedModule.packageName
     runCatching {
@@ -120,12 +116,16 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
 
   override fun getScope(): List<String> {
     ensureModule()
-    return ConfigCache.getModuleScope(loadedModule.packageName)?.map { it.packageName }
+    return ConfigCache.getModuleScope(loadedModule.packageName)?.map { it.packageName }?.distinct()
         ?: emptyList()
   }
 
   override fun requestScope(packages: List<String>, callback: IXposedScopeCallback) {
     val userId = ensureModule()
+    if (packages.isEmpty()) {
+      callback.onScopeRequestApproved(emptyList())
+      return
+    }
     if (!PreferenceStore.isScopeRequestBlocked(loadedModule.packageName)) {
       packages.forEach { pkg ->
         NotificationManager.requestModuleScope(loadedModule.packageName, userId, pkg, callback)
@@ -243,6 +243,9 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
     val userId = ensureModule()
     val values = mutableMapOf<String, Any?>()
 
+    if (diff.getBoolean("clear", false)) {
+      PreferenceStore.deleteModulePrefs(loadedModule.packageName, userId, group)
+    }
     diff.getSerializable("delete")?.let { deletes ->
       (deletes as Set<*>).forEach { values[it as String] = null }
     }
@@ -252,13 +255,17 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
 
     runCatching {
           PreferenceStore.updateModulePrefs(loadedModule.packageName, userId, group, values)
-          (loadedModule.service as? InjectedModuleService)?.onUpdateRemotePreferences(group, diff)
+          (loadedModule.service as? InjectedModuleService)
+              ?.onUpdateRemotePreferences(group, userId, diff)
         }
         .getOrElse { throw RemoteException(it.message) }
   }
 
   override fun deleteRemotePreferences(group: String) {
-    PreferenceStore.deleteModulePrefs(loadedModule.packageName, ensureModule(), group)
+    val userId = ensureModule()
+    PreferenceStore.deleteModulePrefs(loadedModule.packageName, userId, group)
+    (loadedModule.service as? InjectedModuleService)
+        ?.onUpdateRemotePreferences(group, userId, Bundle().apply { putBoolean("clear", true) })
   }
 
   override fun listRemoteFiles(): Array<String> {
