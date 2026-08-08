@@ -17,10 +17,14 @@ import org.matrix.vector.impl.di.VectorBootstrap
 import org.matrix.vector.nativebridge.HookBridge
 
 /** Builder for configuring and registering hooks. */
-class VectorHookBuilder(private val modulePackageName: String, private val origin: Executable) :
-    HookBuilder {
+class VectorHookBuilder(
+    private val modulePackageName: String,
+    private val origin: Executable,
+    private val defaultExceptionMode: ExceptionMode = ExceptionMode.PROTECTIVE,
+) : HookBuilder {
 
-    constructor(origin: Executable) : this(FRAMEWORK_HOOK_OWNER, origin)
+    constructor(origin: Executable) :
+        this(FRAMEWORK_HOOK_OWNER, origin, ExceptionMode.PROTECTIVE)
 
     private var priority = XposedInterface.PRIORITY_DEFAULT
     private var exceptionMode = ExceptionMode.DEFAULT
@@ -59,15 +63,20 @@ class VectorHookBuilder(private val modulePackageName: String, private val origi
         return VectorHookHandle(record, null)
     }
 
-    private fun createRecord(hooker: Hooker): VectorHookRecord =
-        VectorHookRecord(
+    private fun createRecord(hooker: Hooker): VectorHookRecord {
+        // Resolve DEFAULT before the record is stored natively: callback dispatch has no route back
+        // to the module.prop that defines this module's default exception policy.
+        val resolvedMode =
+            if (exceptionMode == ExceptionMode.DEFAULT) defaultExceptionMode else exceptionMode
+        return VectorHookRecord(
             modulePackageName = modulePackageName,
             executable = origin,
             id = id,
             priority = priority,
             hooker = hooker,
-            exceptionMode = exceptionMode,
+            exceptionMode = resolvedMode,
         )
+    }
 
     private fun validateHookTarget() {
         if (Modifier.isAbstract(origin.modifiers)) {
@@ -227,10 +236,7 @@ private fun uninstallRecord(record: VectorHookRecord): Boolean {
     return true
 }
 
-/**
- * The native callback entrypoint. Instantiated natively by [HookBridge] when a hooked method is
- * hit.
- */
+/** The native callback entrypoint instantiated by [HookBridge] for a hooked executable. */
 class VectorNativeHooker<T : Executable>(private val method: T) {
 
     private val isStatic = Modifier.isStatic(method.modifiers)
@@ -241,15 +247,16 @@ class VectorNativeHooker<T : Executable>(private val method: T) {
         val thisObject = if (isStatic) null else args[0]
         val actualArgs = if (isStatic) args else args.sliceArray(1 until args.size)
 
-        // Retrieve the hook snapshots
-        val snapshots = HookBridge.callbackSnapshot(VectorHookRecord::class.java, method)
+        // Null means every hook was removed after this trampoline was entered.
+        val snapshots =
+            HookBridge.callbackSnapshot(VectorHookRecord::class.java, method)
+                ?: return invokeOriginalSafely(thisObject, actualArgs)
 
         @Suppress("UNCHECKED_CAST")
         val modernHooks =
             (snapshots[0] as Array<VectorHookRecord>).filter { it.isActive() }.toTypedArray()
         val legacyHooks = snapshots[1]
 
-        // Fast path: No hooks active
         if (modernHooks.isEmpty() && legacyHooks.isEmpty()) {
             return invokeOriginalSafely(thisObject, actualArgs)
         }
@@ -266,10 +273,8 @@ class VectorNativeHooker<T : Executable>(private val method: T) {
         }
 
         val rootChain = VectorChain(method, thisObject, actualArgs, modernHooks, 0, terminal)
-
         val result = rootChain.proceed()
 
-        // Type safety validation before returning to C++
         if (returnType != null && returnType != Void.TYPE) {
             if (result == null) {
                 if (returnType.isPrimitive) {
@@ -277,23 +282,19 @@ class VectorNativeHooker<T : Executable>(private val method: T) {
                         "Hook returned null for a primitive return type: $method"
                     )
                 }
-            } else {
-                // Use the JNI bridge for the most reliable type check across ClassLoaders
-                if (
-                    !HookBridge.instanceOf(result, returnType) &&
-                        !isBoxingCompatible(result, returnType)
-                ) {
-                    Utils.logD(
-                        "Hook return type mismatch. Expected ${returnType.name}, got ${result.javaClass.name}"
-                    )
-                }
+            } else if (
+                !HookBridge.instanceOf(result, returnType) &&
+                    !isBoxingCompatible(result, returnType)
+            ) {
+                Utils.logD(
+                    "Hook return type mismatch. Expected ${returnType.name}, got ${result.javaClass.name}"
+                )
             }
         }
 
         return result
     }
 
-    /** Handles primitive boxing compatibility (e.g., Integer object vs int primitive). */
     private fun isBoxingCompatible(obj: Any, targetType: Class<*>): Boolean {
         if (!targetType.isPrimitive) return false
         return when (targetType) {
@@ -309,7 +310,7 @@ class VectorNativeHooker<T : Executable>(private val method: T) {
         }
     }
 
-    /** Safely invokes the original method, unwrapping InvocationTargetExceptions. */
+    /** Safely invokes the original method, unwrapping InvocationTargetExceptions for a chain. */
     private fun invokeOriginalSafely(tObj: Any?, tArgs: Array<Any?>): Any? {
         return try {
             HookBridge.invokeOriginalMethod(method, tObj, *tArgs)
