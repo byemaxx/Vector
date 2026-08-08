@@ -141,6 +141,15 @@ object VectorDaemon {
       "sendToBridge MUST run on the main thread!"
     }
 
+    if (reinjectionLease != null) {
+      val ownerState = FileSystem.ensureActiveReinjectionOwner(daemonInstanceId)
+      if (!ownerState.isOwner) {
+        reinjectionLease.close()
+        terminateStaleDaemon(
+            "Daemon `$daemonInstanceId` lost reinjection ownership before restart injection. Active owner=`${ownerState.owner?.toLogString() ?: "unknown"}`.")
+      }
+    }
+
     Os.seteuid(0)
 
     try {
