@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.database.sqlite.SQLiteDatabase
 import android.util.Log
 import org.lsposed.lspd.models.Application
+import org.matrix.vector.daemon.system.NotificationManager
 
 private const val TAG = "VectorModuleDatabase"
 
@@ -33,7 +34,13 @@ object ModuleDatabase {
       changed = db.update("modules", values, "module_pkg_name = ?", arrayOf(packageName)) > 0
     }
 
-    if (changed) ConfigCache.requestCacheUpdate()
+    if (changed) {
+      ConfigCache.requestCacheUpdate()
+      // Module activation converges here from the Manager, CLI, backup replay and setModuleScope.
+      // The daemon owns the "not activated yet" notification, so clear it at the same convergence
+      // point instead of relying on one UI path to remember doing so.
+      NotificationManager.cancelModuleUpdated(packageName)
+    }
     return changed
   }
 
