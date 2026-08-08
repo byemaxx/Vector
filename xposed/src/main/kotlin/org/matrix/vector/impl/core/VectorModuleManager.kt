@@ -20,9 +20,8 @@ import org.lsposed.lspd.models.Module
 import org.lsposed.lspd.util.Utils.Log
 import org.matrix.vector.impl.VectorContext
 import org.matrix.vector.impl.VectorLifecycleManager
-import org.matrix.vector.impl.hooks.freezeHooks
 import org.matrix.vector.impl.hooks.getActiveHookHandles
-import org.matrix.vector.impl.hooks.unfreezeHooks
+import org.matrix.vector.impl.hooks.hookLockOf
 import org.matrix.vector.impl.utils.VectorModuleClassLoader
 import org.matrix.vector.nativebridge.NativeAPI
 
@@ -46,6 +45,7 @@ object VectorModuleManager {
         val processName: String,
         val isSystemServer: Boolean,
         val entries: List<XposedModule>,
+        val context: VectorContext,
         val classLoaders: Set<ClassLoader>,
         val codeIdentity: RuntimeModuleCodeIdentity,
         val generationId: Long,
@@ -145,6 +145,7 @@ object VectorModuleManager {
                 processName = processName,
                 isSystemServer = isSystemServer,
                 entries = entries,
+                context = vectorContext,
                 classLoaders = setOf(moduleClassLoader),
                 codeIdentity =
                     RuntimeModuleCodeIdentity(
@@ -193,8 +194,12 @@ object VectorModuleManager {
         val oldClassLoaders = oldState.classLoaders
 
         Log.i(TAG, "NEW_INSTANTIATED package=${module.packageName} generation=${newState.generationId}")
-        freezeHooks(module.packageName, oldClassLoaders)
-        Log.i(TAG, "FREEZE_HOOKS package=${module.packageName}")
+
+        // The flag write and all module-owned hook registrations use exactly this lock. A hook
+        // registration that passed its optimistic check before this point must therefore either
+        // finish before the freeze, or acquire the lock afterwards and observe the frozen context.
+        synchronized(hookLockOf(module.packageName)) { oldState.context.freeze() }
+        Log.i(TAG, "FREEZE_HOOKS package=${module.packageName} generation=${oldState.generationId}")
 
         var committed = false
         try {
@@ -270,15 +275,22 @@ object VectorModuleManager {
             callbackFailure?.let { throw HotReloadCommittedException(it) }
         } finally {
             if (!committed) {
-                // Candidate entries were never published. They have no lifecycle ownership and can
-                // become unreachable after this frame; importantly, old hooks/state stay intact.
+                // No generation swap happened. Restore the old generation's ability to register
+                // hooks; candidate entries were never published and can become unreachable.
+                synchronized(hookLockOf(module.packageName)) { oldState.context.unfreeze() }
                 newEntries.forEach(VectorLifecycleManager::detach)
                 Log.i(TAG, "PRECOMMIT_FAILED package=${module.packageName}")
+                Log.i(TAG, "UNFROZEN package=${module.packageName} generation=${oldState.generationId}")
             } else {
+                // A committed generation is retired permanently. Do not unfreeze its VectorContext:
+                // old module objects/threads may remain reachable after lifecycle detach, and must
+                // never be able to install ghost hooks into the new generation.
                 oldEntries.forEach(VectorLifecycleManager::detach)
+                Log.i(
+                    TAG,
+                    "RETIRED_FROZEN package=${module.packageName} generation=${oldState.generationId}",
+                )
             }
-            unfreezeHooks(module.packageName)
-            Log.i(TAG, "UNFROZEN package=${module.packageName}")
         }
     }
 
