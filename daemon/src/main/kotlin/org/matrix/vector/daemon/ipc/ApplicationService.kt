@@ -17,6 +17,7 @@ import org.lsposed.lspd.service.ILSPApplicationService
 import org.matrix.vector.daemon.data.ConfigCache
 import org.matrix.vector.daemon.data.FileSystem
 import org.matrix.vector.daemon.data.ModuleCodeIdentity
+import org.matrix.vector.daemon.data.NativeLibraryStager
 import org.matrix.vector.daemon.utils.InstallerVerifier
 import org.matrix.vector.daemon.utils.ObfuscationManager
 
@@ -148,7 +149,9 @@ object ApplicationService : ILSPApplicationService.Stub() {
   private fun getAllModules(): List<Module> {
     val info = ensureRegistered()
     if (info.key.uid == Process.SYSTEM_UID && info.processName == "system") {
-      return ConfigCache.getModulesForSystemServer()
+      // Only system_server needs native-library staging: ordinary app domains can execute mapped
+      // libraries directly from /data/app. Keep the staging lifecycle separate from SR reinjection.
+      return NativeLibraryStager.prepareForSystemServer(ConfigCache.getModulesForSystemServer())
     }
     if (ManagerService.isRunningManager(getCallingPid(), info.key.uid)) {
       return emptyList()

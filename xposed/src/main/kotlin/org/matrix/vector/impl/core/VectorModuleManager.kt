@@ -59,7 +59,7 @@ object VectorModuleManager {
         try {
             Log.d(TAG, "Loading module ${module.packageName}")
 
-            val librarySearchPath = buildLibrarySearchPath(module)
+            val librarySearchPath = buildLibrarySearchPath(module, isSystemServer)
 
             // Create the isolated ClassLoader for the module
             val initLoader = XposedModule::class.java.classLoader
@@ -87,6 +87,12 @@ object VectorModuleManager {
                     applicationInfo = module.applicationInfo,
                     service = module.service, // Our IPC client
                 )
+
+            // Register native entrypoints before module constructors or onModuleLoaded can load a
+            // library. Adapted from JingMatrix/Vector@5ff67a8; recording afterwards can miss dlopen.
+            module.file.moduleLibraryNames.forEach { libraryName ->
+                NativeAPI.recordNativeEntrypoint(libraryName)
+            }
 
             val entries = instantiateEntries(module, moduleClassLoader, vectorContext)
             if (entries.isEmpty() && module.file.moduleClassNames.isNotEmpty()) {
@@ -139,11 +145,6 @@ object VectorModuleManager {
                     module.versionCode,
                     VectorHotReloadTarget,
                 )
-            }
-
-            // Register any native JNI entrypoints declared by the module
-            module.file.moduleLibraryNames.forEach { libraryName ->
-                NativeAPI.recordNativeEntrypoint(libraryName)
             }
 
             Log.d(TAG, "Loaded module ${module.packageName} successfully.")
@@ -199,7 +200,7 @@ object VectorModuleManager {
         var newStateCommitted = false
         var newEntries: List<XposedModule> = emptyList()
         try {
-            val librarySearchPath = buildLibrarySearchPath(module)
+            val librarySearchPath = buildLibrarySearchPath(module, oldState.isSystemServer)
             val moduleClassLoader =
                 VectorModuleClassLoader.loadApk(
                     module.apkPath,
@@ -281,7 +282,12 @@ object VectorModuleManager {
             (!isSystemServer || ENABLE_SYSTEM_SERVER_HOT_RELOAD)
     }
 
-    private fun buildLibrarySearchPath(module: Module): String = buildString {
+    private fun buildLibrarySearchPath(module: Module, isSystemServer: Boolean): String = buildString {
+        // system_server cannot map executable pages from /data/app apk_data_file. The daemon stages
+        // the current ABI's libraries under xposed_data and this path must win lookup precedence.
+        if (isSystemServer) {
+            module.file.nativeLibraryDir?.let { append(it).append(File.pathSeparator) }
+        }
         val abis =
             if (Process.is64Bit()) Build.SUPPORTED_64_BIT_ABIS else Build.SUPPORTED_32_BIT_ABIS
         for (abi in abis) {
@@ -305,8 +311,8 @@ object VectorModuleManager {
                         return@runCatching
                     }
 
-                    val constructor = runCatching { 
-                        moduleClass.getDeclaredConstructor() 
+                    val constructor = runCatching {
+                        moduleClass.getDeclaredConstructor()
                     }.onFailure { e ->
                         if (e is NoSuchMethodException) {
                             Log.i(TAG, "Skipping incompatible modern entry $className (missing no-arg constructor)")

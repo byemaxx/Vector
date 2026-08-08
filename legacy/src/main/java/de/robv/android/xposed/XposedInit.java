@@ -284,6 +284,11 @@ public final class XposedInit {
         Log.v(TAG, "Loading legacy module " + name + " from " + apk);
 
         var sb = new StringBuilder();
+        // Adapted from JingMatrix/Vector@5ff67a8: system_server cannot execute apk_data_file
+        // mappings, so the staged xposed_data directory must be searched before in-APK entries.
+        if (startsSystemServer && file.nativeLibraryDir != null) {
+            sb.append(file.nativeLibraryDir).append(File.pathSeparator);
+        }
         var abis = Process.is64Bit() ? Build.SUPPORTED_64_BIT_ABIS : Build.SUPPORTED_32_BIT_ABIS;
         for (String abi : abis) {
             sb.append(apk).append("!/lib/").append(abi).append(File.pathSeparator);
