@@ -115,21 +115,42 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
   }
 
   override fun getScope(): List<String> {
-    ensureModule()
-    return ConfigCache.getModuleScope(loadedModule.packageName)?.map { it.packageName }?.distinct()
-        ?: emptyList()
+    val userId = ensureModule()
+    // A module copy sees only its own user's app scopes plus the device-global system scope. This
+    // is the API102 multi-user ownership boundary; returning all rows leaks another user's scope.
+    return ConfigCache.getModuleScope(loadedModule.packageName)
+        ?.filter { it.userId == userId || it.packageName == "system" }
+        ?.map { it.packageName }
+        ?.distinct() ?: emptyList()
   }
 
+  /** One API request is one prompt and one callback, even when it names several packages. */
   override fun requestScope(packages: List<String>, callback: IXposedScopeCallback) {
     val userId = ensureModule()
-    if (packages.isEmpty()) {
+    val requested = packages.distinct().sorted()
+    if (requested.isEmpty()) {
       callback.onScopeRequestApproved(emptyList())
       return
     }
-    if (!PreferenceStore.isScopeRequestBlocked(loadedModule.packageName)) {
-      packages.forEach { pkg ->
-        NotificationManager.requestModuleScope(loadedModule.packageName, userId, pkg, callback)
+
+    // A fixed scope is a daemon policy, not a Manager UI hint. Reject an attempted expansion before
+    // asking the user; ModuleDatabase remains the final write boundary for races/other callers.
+    ConfigCache.staticScopeOf(loadedModule.packageName)?.let { claimed ->
+      val beyond = requested.filterNot(claimed::contains)
+      if (beyond.isNotEmpty()) {
+        callback.onScopeRequestFailed(
+            "This module declares a static scope, so ${beyond.joinToString()} cannot be added")
+        return
       }
+    }
+
+    if (!PreferenceStore.isScopeRequestBlocked(loadedModule.packageName)) {
+      NotificationManager.requestModuleScope(
+          loadedModule.packageName,
+          userId,
+          requested,
+          callback,
+      )
     } else {
       callback.onScopeRequestFailed("Scope request blocked by user configuration")
     }
@@ -137,7 +158,7 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
 
   override fun removeScope(packages: List<String>) {
     val userId = ensureModule()
-    packages.forEach { pkg ->
+    packages.distinct().forEach { pkg ->
       runCatching { ModuleDatabase.removeModuleScope(loadedModule.packageName, pkg, userId) }
           .onFailure { Log.e(TAG, "Error removing scope for $pkg", it) }
     }
