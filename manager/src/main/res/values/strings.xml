@@ -37,7 +37,7 @@
 
     <!-- Degraded causes, in the priority order the daemon reports them -->
     <string name="issue_sepolicy_title">SELinux policy not loaded</string>
-    <string name="issue_sepolicy_summary">Some features will not work. This usually means the root implementation did not apply Vector\'s policy rules.</string>
+    <string name="issue_sepolicy_summary">Some features will not work. This usually means the root implementation did not apply Vector-SR\'s policy rules.</string>
     <string name="issue_system_server_title">System framework injection failed</string>
     <string name="issue_system_server_summary">Modules cannot hook system services. This is rare, and is usually caused by another root module interfering.</string>
     <string name="issue_dex2oat_title">Dex optimizer wrapper unavailable</string>
@@ -49,8 +49,8 @@
     <string name="crash_message">Message</string>
     <string name="crash_where">Where</string>
     <string name="crash_when">When</string>
-    <!-- Shown for "Where" when no frame in the trace belongs to Vector's own code. -->
-    <string name="crash_where_unknown">Nowhere in Vector\'s own code</string>
+    <!-- Shown for "Where" when no frame in the trace belongs to Vector-SR's own code. -->
+    <string name="crash_where_unknown">Nowhere in Vector-SR\'s own code</string>
     <!-- %1$s is a timestamp, %2$s a thread name, e.g. "2026-07-29 11:42:03 +0200 on main". -->
     <string name="crash_when_value">%1$s on %2$s</string>
     <string name="crash_open_trace">See the trace</string>
@@ -91,7 +91,7 @@
     <string name="info_injected">Injected</string>
     <string name="info_not_injected">Not injected</string>
     <string name="status_notification">Status notification</string>
-    <string name="status_notification_summary">A persistent notification showing that Vector is running.</string>
+    <string name="status_notification_summary">A persistent notification showing that Vector-SR is running.</string>
     <string name="force_launcher_icons">Stop apps hiding their launcher icons</string>
     <string name="force_launcher_icons_summary">Since Android 10, an app that hides its own launcher icon gets one back that opens its app info page. Turn this off to let it stay hidden — your launcher may not catch up until it restarts. Apps that never had a launcher icon, including most modules, are unaffected.</string>
     <string name="action_copy_all">Copy all</string>
@@ -210,7 +210,7 @@
     <string name="modules_incompatible">Needs libxposed API %1$d, which this framework does not provide.</string>
     <string name="modules_incompatible_legacy">Needs Xposed API %1$d, which this framework does not provide.</string>
     <string name="modules_api_behind">Built for libxposed API %1$d. API %2$d changed the interface, so this module may not work fully.</string>
-    <string name="modules_no_daemon">Vector is not running, so the module list is unavailable. Open system status from Home to see why.</string>
+    <string name="modules_no_daemon">Vector-SR is not running, so the module list is unavailable. Open system status from Home to see why.</string>
 
     <!-- Built-in web viewer -->
     <string name="web_open_external">Open in browser</string>
@@ -237,7 +237,7 @@
         <item quantity="other">Last %1$d months</item>
     </plurals>
     <string name="settings_open_externally">Open links in a browser</string>
-    <string name="settings_open_externally_summary">Off: GitHub pages open inside Vector.</string>
+    <string name="settings_open_externally_summary">Off: GitHub pages open inside Vector-SR.</string>
 
     <!-- Scope editor -->
     <string name="scope_use_recommended">Use what the module asks for</string>
@@ -312,7 +312,7 @@
     <!-- Generic -->
     <string name="back">Back</string>
     <string name="retry">Retry</string>
-    <string name="app_name" translatable="false">Vector</string>
+    <string name="app_name" translatable="false">Vector-SR</string>
 
     <string name="appearance_color">Colour</string>
     <string name="appearance_custom_color">Pick a colour</string>
@@ -407,7 +407,7 @@
     <string name="report_save_with_root">Save the log folder (needs root)</string>
     <string name="report_saved_to">Saved to %1$s</string>
     <string name="report_see_guide">Full guide in issue</string>
-    <string name="report_root_refused">Root refused. Allow Vector in your root manager, then try again%1$s</string>
+    <string name="report_root_refused">Root refused. Allow Vector-SR in your root manager, then try again%1$s</string>
     <string name="home_custom_build">Custom build — ahead of master</string>
     <string name="language_title">Language</string>
     <string name="language_system">System default</string>
@@ -415,7 +415,7 @@
 
     <string name="language_translated_by">Translated by %1$s</string>
     <string name="language_help_short">Translate</string>
-    <string name="language_help">Help translate Vector</string>
+    <string name="language_help">Help translate Vector-SR</string>
 
     <string name="update_title">Framework update</string>
     <string name="update_channel_canary">Canary build</string>
@@ -431,7 +431,7 @@
     <string name="update_no_notes">This release published no notes.</string>
     <string name="update_no_root">No root implementation was found, so nothing can be flashed.</string>
     <string name="update_root_unknown">This framework build does not report which root implementation is installed.</string>
-    <string name="update_root_multiple">Two root implementations were found. Vector will not guess which one owns the module.</string>
+    <string name="update_root_multiple">Two root implementations were found. Vector-SR will not guess which one owns the module.</string>
     <string name="update_failed_start">The installer could not be started.</string>
     <string name="update_failed_download">The update could not be downloaded.</string>
     <string name="update_failed_exit">The installer failed (exit %1$d).</string>
@@ -466,9 +466,9 @@
     <string name="settings_doh_fell_back">Cloudflare could not be reached (%1$s), so the network\'s resolver is being used for the rest of this session.</string>
     <string name="settings_doh_retry">Try again</string>
 
-    <!-- Getting back into Vector, which parasitically has no launcher icon of its own -->
-    <string name="launcher_title">How to open Vector</string>
-    <string name="launcher_body">Vector is not installed as an app, so your launcher has nothing to show. These are the ways back in.</string>
+    <!-- Getting back into Vector-SR, which parasitically has no launcher icon of its own -->
+    <string name="launcher_title">How to open Vector-SR</string>
+    <string name="launcher_body">Vector-SR is not installed as an app, so your launcher has nothing to show. These are the ways back in.</string>
     <string name="launcher_shortcut">Home screen shortcut</string>
     <string name="launcher_shortcut_create">Create</string>
     <string name="launcher_shortcut_unsupported">Your launcher does not accept pinned shortcuts.</string>
@@ -477,15 +477,15 @@
     <string name="launcher_install">Install as an app</string>
     <string name="launcher_install_action">Install</string>
     <string name="launcher_install_reinstall">Reinstall</string>
-    <string name="launcher_install_done">Vector is installed. Open it from your launcher.</string>
-    <string name="launcher_install_failed">Vector could not be installed.</string>
-    <string name="launcher_install_conflict">A copy of Vector signed with a different key is already installed. It has to be removed before this one will fit.</string>
+    <string name="launcher_install_done">Vector-SR is installed. Open it from your launcher.</string>
+    <string name="launcher_install_failed">Vector-SR could not be installed.</string>
+    <string name="launcher_install_conflict">A copy of Vector-SR signed with a different key is already installed. It has to be removed before this one will fit.</string>
     <string name="launcher_install_remove">Remove it</string>
-    <string name="launcher_install_diverged">The installed copy is a different build of Vector — not the one running here. Reinstalling replaces it.</string>
+    <string name="launcher_install_diverged">The installed copy is a different build of Vector-SR — not the one running here. Reinstalling replaces it.</string>
     <string name="launcher_route_available">Available</string>
-    <string name="launcher_note">You can also dial %1$s, or open Vector from the action button in %2$s.</string>
+    <string name="launcher_note">You can also dial %1$s, or open Vector-SR from the action button in %2$s.</string>
     <string name="launcher_root_generic">your root manager</string>
-    <string name="launcher_prompt_title">Vector has no icon yet</string>
-    <string name="launcher_prompt_body">Vector runs inside another process rather than being installed, so nothing appears in your launcher and there is no obvious way back in. Give it a home screen shortcut, or install it as an ordinary app.</string>
+    <string name="launcher_prompt_title">Vector-SR has no icon yet</string>
+    <string name="launcher_prompt_body">Vector-SR runs inside another process rather than being installed, so nothing appears in your launcher and there is no obvious way back in. Give it a home screen shortcut, or install it as an ordinary app.</string>
     <string name="launcher_prompt_never">Don\'t ask again</string>
 </resources>

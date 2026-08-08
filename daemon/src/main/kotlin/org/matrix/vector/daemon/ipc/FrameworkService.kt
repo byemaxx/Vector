@@ -10,6 +10,8 @@ import io.github.libxposed.service.HookedProcess
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import org.matrix.vector.ipc.LoadedModule
 import org.matrix.vector.ipc.IProcessChannel
 import org.matrix.vector.ipc.IFrameworkService
@@ -45,6 +47,14 @@ object FrameworkService : IFrameworkService.Stub() {
   data class ProcessKey(val uid: Int, val pid: Int)
 
   private val processes = ConcurrentHashMap<ProcessKey, ProcessInfo>()
+  private val processLock = Any()
+  // Recovery epochs describe system_server restart boundaries; registration ids identify one
+  // concrete heartbeat registration and must not be reused for stale sweeps.
+  private val currentRecoveryEpoch = AtomicLong(0)
+  private val nextRegistrationId = AtomicLong(1)
+  private val staleSweepExecutor = Executors.newSingleThreadScheduledExecutor { r ->
+    Thread(r, "vector-framework-sweep").apply { isDaemon = true }
+  }
 
   /** One module generation loaded into one process: what a hot reload request addresses. */
   class HotReloadTarget(
@@ -64,21 +74,39 @@ object FrameworkService : IFrameworkService.Stub() {
   // Ids are framework-assigned and never reused, as HookedProcess.targetId requires.
   private val nextHotReloadTargetId = AtomicLong(1)
 
-  private class ProcessInfo(val key: ProcessKey, val processName: String, val heartBeat: IBinder) :
+  private class ProcessInfo(
+      val key: ProcessKey,
+      val processName: String,
+      val heartBeat: IBinder,
+      val recoveryEpoch: Long,
+      val registrationId: Long,
+  ) :
       IBinder.DeathRecipient {
     val targetIds = ConcurrentHashMap<String, Long>()
+    val closed = java.util.concurrent.atomic.AtomicBoolean(false)
 
     @Volatile var hotReloadBinder: IProcessChannel? = null
 
-    init {
+    fun init() {
       heartBeat.linkToDeath(this, 0)
-      processes[key] = this
+      val previous = synchronized(processLock) {
+        if (closed.get()) throw RemoteException("Process died while registering")
+        processes.put(key, this)
+      }
+      previous?.close("pid_reregistered")
     }
 
     override fun binderDied() {
-      heartBeat.unlinkToDeath(this, 0)
-      processes.remove(key)
-      targetIds.values.forEach { hotReloadTargets.remove(it) }
+      close("binder_died")
+    }
+
+    fun close(reason: String) {
+      if (closed.compareAndSet(false, true)) {
+        Log.d(TAG, "Closing ProcessInfo for uid=${key.uid} pid=${key.pid} ($processName), reason=$reason")
+        runCatching { heartBeat.unlinkToDeath(this, 0) }
+        synchronized(processLock) { processes.remove(key, this) }
+        targetIds.values.forEach { hotReloadTargets.remove(it) }
+      }
     }
   }
 
@@ -247,13 +275,49 @@ object FrameworkService : IFrameworkService.Stub() {
 
   fun registerHeartBeat(uid: Int, pid: Int, processName: String, heartBeat: IBinder): Boolean {
     return runCatching {
-          ProcessInfo(ProcessKey(uid, pid), processName, heartBeat)
+          ProcessInfo(
+                  ProcessKey(uid, pid),
+                  processName,
+                  heartBeat,
+                  currentRecoveryEpoch.get(),
+                  nextRegistrationId.getAndIncrement())
+              .init()
           true
         }
         .getOrDefault(false)
   }
 
+  fun detachSystemServerForRestart(generation: Long) {
+    val newEpoch = currentRecoveryEpoch.incrementAndGet()
+    processes.values.filter { it.key.uid == 1000 && it.processName == "system" }.forEach {
+      it.close("system_server_restarted_$generation")
+    }
+    staleSweepExecutor.schedule({
+      // A single failed ping can race a transient binder stall. Keep only registrations whose
+      // first check failed, then confirm the same object after a second delay.
+      val firstFailed =
+          processes.values.filter { info ->
+            info.recoveryEpoch < newEpoch &&
+                processes[info.key] === info &&
+                !runCatching { info.heartBeat.pingBinder() }.getOrDefault(true)
+          }
+      staleSweepExecutor.schedule({
+        firstFailed.forEach { info ->
+          val stillRegistered = processes[info.key] === info
+          val alive = runCatching { info.heartBeat.pingBinder() }.getOrDefault(true)
+          if (stillRegistered && !alive) {
+            info.close("stale_registration_sweep_$generation")
+          }
+        }
+      }, 2, TimeUnit.SECONDS)
+    }, 5, TimeUnit.SECONDS)
+  }
+
   fun hasRegister(uid: Int, pid: Int): Boolean = processes.containsKey(ProcessKey(uid, pid))
+
+  /** Returns whether the currently registered process is system_server. */
+  fun hasSystemServerRegistration(): Boolean =
+      processes.values.any { it.key.uid == Process.SYSTEM_UID && it.processName == "system" }
 
   private fun ensureRegistered(): ProcessInfo {
     val key = ProcessKey(getCallingUid(), getCallingPid())

@@ -22,7 +22,7 @@
     <string name="status_open_details">فتح حالة النظام</string>
 
     <string name="issue_sepolicy_title">لم تُحمَّل سياسة SELinux</string>
-    <string name="issue_sepolicy_summary">لن تعمل بعض الميزات. يعني هذا عادةً أن تطبيق الروت لم يطبّق قواعد Vector.</string>
+    <string name="issue_sepolicy_summary">لن تعمل بعض الميزات. يعني هذا عادةً أن تطبيق الروت لم يطبّق قواعد Vector-SR.</string>
     <string name="issue_system_server_title">فشل الحقن في إطار النظام</string>
     <string name="issue_system_server_summary">لا تستطيع الوحدات ربط خدمات النظام. هذا نادر، وسببه عادةً وحدة روت أخرى تتداخل معه.</string>
     <string name="issue_dex2oat_title">غلاف dex2oat غير متاح</string>
@@ -45,7 +45,7 @@
     <string name="info_injected">محقون</string>
     <string name="info_not_injected">غير محقون</string>
     <string name="status_notification">إشعار الحالة</string>
-    <string name="status_notification_summary">إشعار دائم يبيّن أن Vector يعمل.</string>
+    <string name="status_notification_summary">إشعار دائم يبيّن أن Vector-SR يعمل.</string>
     <string name="action_copy_all">نسخ الكل</string>
     <string name="copied">نُسخ إلى الحافظة</string>
 
@@ -144,7 +144,7 @@
     <string name="modules_incompatible">يحتاج إلى libxposed API %1$d، وهو غير متوفّر في هذا الإطار.</string>
     <string name="modules_incompatible_legacy">تحتاج واجهة Xposed %1$d، وهذا الإطار لا يوفّرها.</string>
     <string name="modules_api_behind">بُني على libxposed API %1$d. غيّر الإصدار %2$d الواجهة، لذا قد لا تعمل هذه الوحدة بالكامل.</string>
-    <string name="modules_no_daemon">‏Vector لا يعمل، لذا قائمة الوحدات غير متاحة. افتح حالة النظام من الرئيسية لمعرفة السبب.</string>
+    <string name="modules_no_daemon">‏Vector-SR لا يعمل، لذا قائمة الوحدات غير متاحة. افتح حالة النظام من الرئيسية لمعرفة السبب.</string>
 
     <string name="web_open_external">فتح في المتصفح</string>
 
@@ -171,7 +171,7 @@
         <item quantity="other">آخر %1$d شهر</item>
     </plurals>
     <string name="settings_open_externally">فتح الروابط في المتصفح</string>
-    <string name="settings_open_externally_summary">عند الإيقاف: تُفتح صفحات GitHub داخل Vector.</string>
+    <string name="settings_open_externally_summary">عند الإيقاف: تُفتح صفحات GitHub داخل Vector-SR.</string>
 
     <string name="scope_use_recommended">استخدام ما تطلبه الوحدة</string>
     <string name="scope_select_visible">تحديد كل ما هو ظاهر</string>
@@ -300,7 +300,7 @@
     <string name="report_save_with_root">حفظ مجلد السجلات (يحتاج روت)</string>
     <string name="report_saved_to">حُفظ في %1$s</string>
     <string name="report_see_guide">الدليل الكامل في المشكلة</string>
-    <string name="report_root_refused">رُفض الروت. اسمح لـ Vector في مدير الروت لديك ثم أعد المحاولة%1$s</string>
+    <string name="report_root_refused">رُفض الروت. اسمح لـ Vector-SR في مدير الروت لديك ثم أعد المحاولة%1$s</string>
     <string name="home_custom_build">إصدار خاص — أحدث من master</string>
     <string name="language_title">اللغة</string>
     <string name="language_system">لغة النظام</string>
@@ -308,7 +308,7 @@
 
     <string name="language_translated_by">ترجمة: %1$s</string>
     <string name="language_help_short">ترجمة</string>
-    <string name="language_help">ساعِد في ترجمة Vector</string>
+    <string name="language_help">ساعِد في ترجمة Vector-SR</string>
 
     <string name="update_title">تحديث الإطار</string>
     <string name="update_channel_canary">إصدار canary</string>
@@ -323,7 +323,7 @@
     <string name="update_none">لا يوجد تحديث متاح.</string>
     <string name="update_no_notes">لم يَنشر هذا الإصدار أي ملاحظات.</string>
     <string name="update_no_root">لم يُعثر على أي تطبيق للروت، فلا شيء يمكن التثبيت من خلاله.</string>
-    <string name="update_root_multiple">عُثر على تطبيقَي روت. لن يخمّن Vector أيهما يدير الوحدة.</string>
+    <string name="update_root_multiple">عُثر على تطبيقَي روت. لن يخمّن Vector-SR أيهما يدير الوحدة.</string>
     <string name="update_failed_start">تعذّر بدء برنامج التثبيت.</string>
     <string name="update_failed_download">تعذّر تنزيل التحديث.</string>
     <string name="update_failed_exit">أخفق برنامج التثبيت (رمز الخروج %1$d).</string>
@@ -429,7 +429,7 @@
     <string name="crash_message">الرسالة</string>
     <string name="crash_where">أين</string>
     <string name="crash_when">متى</string>
-    <string name="crash_where_unknown">ليس في أي موضع من كود Vector نفسه</string>
+    <string name="crash_where_unknown">ليس في أي موضع من كود Vector-SR نفسه</string>
     <string name="crash_when_value">%1$s في %2$s</string>
     <string name="crash_open_trace">عرض التتبّع</string>
     <string name="crash_trace">تعطّل</string>
@@ -467,8 +467,8 @@
     <string name="settings_doh_fell_back">تعذّر الوصول إلى Cloudflare (%1$s)، لذا سيُستخدَم محلّل الشبكة لبقية هذه الجلسة.</string>
     <string name="settings_doh_retry">إعادة المحاولة</string>
 
-    <string name="launcher_title">كيف تفتح Vector</string>
-    <string name="launcher_body">لا يُثبَّت Vector كتطبيق، لذا لا يجد المشغّل ما يعرضه. هذه هي طرق العودة إليه.</string>
+    <string name="launcher_title">كيف تفتح Vector-SR</string>
+    <string name="launcher_body">لا يُثبَّت Vector-SR كتطبيق، لذا لا يجد المشغّل ما يعرضه. هذه هي طرق العودة إليه.</string>
     <string name="launcher_shortcut">اختصار على الشاشة الرئيسية</string>
     <string name="launcher_shortcut_create">إنشاء</string>
     <string name="launcher_shortcut_unsupported">المشغّل لديك لا يقبل الاختصارات المثبَّتة.</string>
@@ -477,15 +477,15 @@
     <string name="launcher_install">التثبيت كتطبيق</string>
     <string name="launcher_install_action">تثبيت</string>
     <string name="launcher_install_reinstall">إعادة التثبيت</string>
-    <string name="launcher_install_done">تم تثبيت Vector. افتحه من المشغّل.</string>
-    <string name="launcher_install_failed">تعذّر تثبيت Vector.</string>
-    <string name="launcher_install_conflict">توجد نسخة من Vector موقَّعة بمفتاح مختلف مثبَّتة بالفعل. لا بد من إزالتها قبل أن تُقبل هذه.</string>
+    <string name="launcher_install_done">تم تثبيت Vector-SR. افتحه من المشغّل.</string>
+    <string name="launcher_install_failed">تعذّر تثبيت Vector-SR.</string>
+    <string name="launcher_install_conflict">توجد نسخة من Vector-SR موقَّعة بمفتاح مختلف مثبَّتة بالفعل. لا بد من إزالتها قبل أن تُقبل هذه.</string>
     <string name="launcher_install_remove">إزالتها</string>
-    <string name="launcher_install_diverged">النسخة المثبَّتة بناء مختلف من Vector — ليست التي تعمل هنا. إعادة التثبيت تستبدلها.</string>
+    <string name="launcher_install_diverged">النسخة المثبَّتة بناء مختلف من Vector-SR — ليست التي تعمل هنا. إعادة التثبيت تستبدلها.</string>
     <string name="launcher_route_available">متاح</string>
-    <string name="launcher_note">يمكنك أيضًا طلب %1$s، أو فتح Vector من زر الإجراء في %2$s.</string>
+    <string name="launcher_note">يمكنك أيضًا طلب %1$s، أو فتح Vector-SR من زر الإجراء في %2$s.</string>
     <string name="launcher_root_generic">مدير الروت لديك</string>
-    <string name="launcher_prompt_title">ليس لـ Vector أيقونة بعد</string>
-    <string name="launcher_prompt_body">يعمل Vector داخل عملية أخرى بدل أن يكون مثبَّتًا، فلا يظهر شيء في المشغّل ولا توجد طريقة واضحة للعودة إليه. امنحه اختصارًا على الشاشة الرئيسية، أو ثبِّته كتطبيق عادي.</string>
+    <string name="launcher_prompt_title">ليس لـ Vector-SR أيقونة بعد</string>
+    <string name="launcher_prompt_body">يعمل Vector-SR داخل عملية أخرى بدل أن يكون مثبَّتًا، فلا يظهر شيء في المشغّل ولا توجد طريقة واضحة للعودة إليه. امنحه اختصارًا على الشاشة الرئيسية، أو ثبِّته كتطبيق عادي.</string>
     <string name="launcher_prompt_never">عدم السؤال مجددًا</string>
 </resources>

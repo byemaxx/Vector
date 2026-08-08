@@ -22,7 +22,7 @@
     <string name="status_open_details">システム状態を開く</string>
 
     <string name="issue_sepolicy_title">SELinux ポリシーが読み込まれていません</string>
-    <string name="issue_sepolicy_summary">一部の機能が動作しません。たいていは root 実装が Vector のポリシー規則を適用しなかったことが原因です。</string>
+    <string name="issue_sepolicy_summary">一部の機能が動作しません。たいていは root 実装が Vector-SR のポリシー規則を適用しなかったことが原因です。</string>
     <string name="issue_system_server_title">システムフレームワークへの注入に失敗しました</string>
     <string name="issue_system_server_summary">モジュールがシステムサービスをフックできません。まれな症状で、たいていは別の root モジュールが干渉しています。</string>
     <string name="issue_dex2oat_title">dex2oat ラッパーが利用できません</string>
@@ -45,7 +45,7 @@
     <string name="info_injected">注入済み</string>
     <string name="info_not_injected">未注入</string>
     <string name="status_notification">状態通知</string>
-    <string name="status_notification_summary">Vector が動作していることを示す常駐通知。</string>
+    <string name="status_notification_summary">Vector-SR が動作していることを示す常駐通知。</string>
     <string name="action_copy_all">すべてコピー</string>
     <string name="copied">クリップボードにコピーしました</string>
 
@@ -119,7 +119,7 @@
     <string name="modules_incompatible">libxposed API %1$d が必要ですが、このフレームワークは提供していません。</string>
     <string name="modules_incompatible_legacy">Xposed API %1$d が必要ですが、このフレームワークは提供していません。</string>
     <string name="modules_api_behind">libxposed API %1$d 向けにビルドされています。API %2$d でインターフェースが変わったため、完全には動作しない可能性があります。</string>
-    <string name="modules_no_daemon">Vector が動作していないため、モジュール一覧を取得できません。理由はホームのシステム状態で確認できます。</string>
+    <string name="modules_no_daemon">Vector-SR が動作していないため、モジュール一覧を取得できません。理由はホームのシステム状態で確認できます。</string>
 
     <string name="web_open_external">ブラウザーで開く</string>
 
@@ -141,7 +141,7 @@
         <item quantity="other">直近 %1$d か月</item>
     </plurals>
     <string name="settings_open_externally">リンクをブラウザーで開く</string>
-    <string name="settings_open_externally_summary">オフのとき、GitHub のページは Vector 内で開きます。</string>
+    <string name="settings_open_externally_summary">オフのとき、GitHub のページは Vector-SR 内で開きます。</string>
 
     <string name="scope_use_recommended">モジュールの要求どおりにする</string>
     <string name="scope_select_visible">表示中のすべてを選択</string>
@@ -250,7 +250,7 @@
     <string name="report_save_with_root">ログフォルダーを保存（root が必要）</string>
     <string name="report_saved_to">%1$s に保存しました</string>
     <string name="report_see_guide">詳しい手引きは課題に</string>
-    <string name="report_root_refused">root が拒否されました。お使いの root マネージャーで Vector を許可してから、もう一度お試しください%1$s</string>
+    <string name="report_root_refused">root が拒否されました。お使いの root マネージャーで Vector-SR を許可してから、もう一度お試しください%1$s</string>
     <string name="home_custom_build">独自ビルド — master より先行</string>
     <string name="language_title">言語</string>
     <string name="language_system">システムに合わせる</string>
@@ -258,7 +258,7 @@
 
     <string name="language_translated_by">翻訳：%1$s</string>
     <string name="language_help_short">翻訳</string>
-    <string name="language_help">Vector の翻訳に参加する</string>
+    <string name="language_help">Vector-SR の翻訳に参加する</string>
 
     <string name="update_title">フレームワークの更新</string>
     <string name="update_channel_canary">canary ビルド</string>
@@ -273,7 +273,7 @@
     <string name="update_none">利用できる更新はありません。</string>
     <string name="update_no_notes">このリリースには説明がありません。</string>
     <string name="update_no_root">root 実装が見つからないため、書き込めません。</string>
-    <string name="update_root_multiple">root 実装が 2 つ見つかりました。どちらがモジュールを管理しているか、Vector は推測しません。</string>
+    <string name="update_root_multiple">root 実装が 2 つ見つかりました。どちらがモジュールを管理しているか、Vector-SR は推測しません。</string>
     <string name="update_failed_start">インストーラーを起動できませんでした。</string>
     <string name="update_failed_download">更新をダウンロードできませんでした。</string>
     <string name="update_failed_exit">インストーラーが失敗しました（終了コード %1$d）。</string>
@@ -379,7 +379,7 @@
     <string name="crash_message">メッセージ</string>
     <string name="crash_where">場所</string>
     <string name="crash_when">発生時刻</string>
-    <string name="crash_where_unknown">Vector 自身のコードには見当たりません</string>
+    <string name="crash_where_unknown">Vector-SR 自身のコードには見当たりません</string>
     <string name="crash_when_value">%1$s（スレッド %2$s）</string>
     <string name="crash_open_trace">スタックトレースを見る</string>
     <string name="crash_trace">クラッシュ</string>
@@ -412,8 +412,8 @@
     <string name="settings_doh_fell_back">Cloudflare に接続できませんでした (%1$s)。このセッションの残りはネットワークのリゾルバを使用します。</string>
     <string name="settings_doh_retry">再試行</string>
 
-    <string name="launcher_title">Vector の開き方</string>
-    <string name="launcher_body">Vector はアプリとしてインストールされていないため、ランチャーには表示するものがありません。戻ってくる手段は次のとおりです。</string>
+    <string name="launcher_title">Vector-SR の開き方</string>
+    <string name="launcher_body">Vector-SR はアプリとしてインストールされていないため、ランチャーには表示するものがありません。戻ってくる手段は次のとおりです。</string>
     <string name="launcher_shortcut">ホーム画面のショートカット</string>
     <string name="launcher_shortcut_create">作成</string>
     <string name="launcher_shortcut_unsupported">このランチャーはショートカットの固定を受け付けません。</string>
@@ -422,15 +422,15 @@
     <string name="launcher_install">アプリとしてインストール</string>
     <string name="launcher_install_action">インストール</string>
     <string name="launcher_install_reinstall">再インストール</string>
-    <string name="launcher_install_done">Vector をインストールしました。ランチャーから開けます。</string>
-    <string name="launcher_install_failed">Vector をインストールできませんでした。</string>
-    <string name="launcher_install_conflict">別の鍵で署名された Vector が既にインストールされています。こちらを入れるには先に削除してください。</string>
+    <string name="launcher_install_done">Vector-SR をインストールしました。ランチャーから開けます。</string>
+    <string name="launcher_install_failed">Vector-SR をインストールできませんでした。</string>
+    <string name="launcher_install_conflict">別の鍵で署名された Vector-SR が既にインストールされています。こちらを入れるには先に削除してください。</string>
     <string name="launcher_install_remove">削除する</string>
-    <string name="launcher_install_diverged">インストール済みのものは別のビルドの Vector です。ここで動作しているものではありません。再インストールすると置き換わります。</string>
+    <string name="launcher_install_diverged">インストール済みのものは別のビルドの Vector-SR です。ここで動作しているものではありません。再インストールすると置き換わります。</string>
     <string name="launcher_route_available">利用できます</string>
     <string name="launcher_note">%1$s をダイヤルするか、%2$s のアクションボタンからも開けます。</string>
     <string name="launcher_root_generic">root マネージャー</string>
-    <string name="launcher_prompt_title">Vector にはまだアイコンがありません</string>
-    <string name="launcher_prompt_body">Vector はインストールされるのではなく別のプロセスの中で動くため、ランチャーには何も現れず、戻ってくる分かりやすい手段がありません。ホーム画面にショートカットを作るか、通常のアプリとしてインストールしてください。</string>
+    <string name="launcher_prompt_title">Vector-SR にはまだアイコンがありません</string>
+    <string name="launcher_prompt_body">Vector-SR はインストールされるのではなく別のプロセスの中で動くため、ランチャーには何も現れず、戻ってくる分かりやすい手段がありません。ホーム画面にショートカットを作るか、通常のアプリとしてインストールしてください。</string>
     <string name="launcher_prompt_never">今後表示しない</string>
 </resources>

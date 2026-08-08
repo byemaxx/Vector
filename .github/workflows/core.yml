@@ -121,6 +121,16 @@ jobs:
         shell: bash
         run: rm -rf $ANDROID_HOME/cmake
 
+      # The manifest is packaged into the module zip, so generate it before Gradle assembles that
+      # zip from exactly the same tag and origin/master count the build configuration uses.
+      - name: Generate module update manifest
+        run: |
+          set -euo pipefail
+          version_name=$(git tag --list --sort=-v:refname | head -n1 | sed 's/^v//')
+          test -n "$version_name"
+          version_code=$(git rev-list --count refs/remotes/origin/master)
+          python3 scripts/generate_update_json.py "$version_name" "$version_code" "$GITHUB_REPOSITORY"
+
       - name: Build with Gradle
         run: |
           ./gradlew zipAll
@@ -129,24 +139,24 @@ jobs:
         if: success()
         id: prepareArtifact
         run: |
-          zygiskReleaseName=`ls zygisk/release/Vector-v*-Release.zip | awk -F '(/|.zip)' '{print $3}'` && echo "zygiskReleaseName=$zygiskReleaseName" >> $GITHUB_OUTPUT
-          zygiskDebugName=`ls zygisk/release/Vector-v*-Debug.zip | awk -F '(/|.zip)' '{print $3}'` && echo "zygiskDebugName=$zygiskDebugName" >> $GITHUB_OUTPUT
-          versionCode=`echo "$zygiskDebugName" | awk -F '-' '{print $3}'` && echo "versionCode=$versionCode" >> $GITHUB_OUTPUT
-          versionName=`echo "$zygiskDebugName" | awk -F '-' '{print $2}'` && echo "versionName=$versionName" >> $GITHUB_OUTPUT
-          unzip zygisk/release/Vector-v*-Release.zip -d Vector-Release
-          unzip zygisk/release/Vector-v*-Debug.zip -d Vector-Debug
+          zygiskReleaseName=`basename zygisk/release/Vector-SR-v*-Release.zip` && echo "zygiskReleaseName=$zygiskReleaseName" >> $GITHUB_OUTPUT
+          zygiskDebugName=`basename zygisk/release/Vector-SR-v*-Debug.zip` && echo "zygiskDebugName=$zygiskDebugName" >> $GITHUB_OUTPUT
+          versionCode=${zygiskDebugName#Vector-SR-v}; versionCode=${versionCode%-Debug.zip}; versionCode=${versionCode##*-}; echo "versionCode=$versionCode" >> $GITHUB_OUTPUT
+          versionName=${zygiskDebugName#Vector-SR-}; versionName=${versionName%-Debug.zip}; versionName=${versionName%-*}; echo "versionName=$versionName" >> $GITHUB_OUTPUT
+          unzip zygisk/release/Vector-SR-v*-Release.zip -d Vector-SR-Release
+          unzip zygisk/release/Vector-SR-v*-Debug.zip -d Vector-SR-Debug
 
       - name: Upload zygisk release
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.prepareArtifact.outputs.zygiskReleaseName }}
-          path: "./Vector-Release/*"
+          path: "./Vector-SR-Release/*"
 
       - name: Upload zygisk debug
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.prepareArtifact.outputs.zygiskDebugName }}
-          path: "./Vector-Debug/*"
+          path: "./Vector-SR-Debug/*"
 
       # One entry per module that minifies. `app` was the old manager and has not existed since
       # #796, so the manager's mapping — the one an obfuscated stack trace from a user actually
@@ -199,8 +209,39 @@ jobs:
             --latest \
             --title "Vector ${TAG}" \
             --notes "$notes" \
-            zygisk/release/Vector-v*-Release.zip \
-            zygisk/release/Vector-v*-Debug.zip
+            zygisk/release/Vector-SR-v*-Release.zip \
+            zygisk/release/Vector-SR-v*-Debug.zip
+
+      # Publish the raw metadata only after the stable release and its exact asset have succeeded.
+      # A clean orphan branch prevents source files or prior metadata history from leaking into the
+      # endpoint consumed by installed modules.
+      - name: Publish stable update metadata
+        if: ${{ success() && github.ref_type == 'tag' && startsWith(github.ref_name, 'v') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          VERSION_NAME: ${{ steps.prepareArtifact.outputs.versionName }}
+          VERSION_CODE: ${{ steps.prepareArtifact.outputs.versionCode }}
+        run: |
+          set -euo pipefail
+          release_zip="Vector-SR-v${VERSION_NAME}-${VERSION_CODE}-Release.zip"
+          gh release view "$TAG" --json assets --jq '.assets[].name' | grep -Fx "$release_zip"
+          expected_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${release_zip}"
+          jq -e --arg version "$TAG" --argjson code "$VERSION_CODE" --arg url "$expected_url" \
+            '.version == $version and .versionCode == $code and .zipUrl == $url' zygisk/update.json
+
+          metadata_tree=$(mktemp -d)
+          trap 'git worktree remove --force "$metadata_tree"' EXIT
+          git worktree add --detach "$metadata_tree" HEAD
+          git -C "$metadata_tree" checkout --orphan update-metadata-build
+          git -C "$metadata_tree" rm -rf .
+          mkdir -p "$metadata_tree/zygisk"
+          cp zygisk/update.json "$metadata_tree/zygisk/update.json"
+          git -C "$metadata_tree" add zygisk/update.json
+          git -C "$metadata_tree" -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "ci: publish stable module metadata" --no-verify
+          git -C "$metadata_tree" push --force origin HEAD:refs/heads/update-metadata
 
       # --- canary distribution ---------------------------------------------------------------
       #
@@ -240,8 +281,8 @@ jobs:
 
           | Build | Use it when |
           | :-- | :-- |
-          | \`Vector-${VERSION_NAME}-${VERSION_CODE}-Debug.zip\` | You are chasing a bug. Far more logging, and the build maintainers ask for in reports. |
-          | \`Vector-${VERSION_NAME}-${VERSION_CODE}-Release.zip\` | You just want the newest code. |
+          | \`Vector-SR-${VERSION_NAME}-${VERSION_CODE}-Debug.zip\` | You are chasing a bug. Far more logging, and the build maintainers ask for in reports. |
+          | \`Vector-SR-${VERSION_NAME}-${VERSION_CODE}-Release.zip\` | You just want the newest code. |
 
           Only the five most recent canaries are kept.
           EOF
@@ -255,8 +296,8 @@ jobs:
             --target "${{ github.sha }}" \
             --title "Vector ${VERSION_NAME} canary ${VERSION_CODE}" \
             --notes "$notes" \
-            zygisk/release/Vector-v*-Release.zip \
-            zygisk/release/Vector-v*-Debug.zip
+            zygisk/release/Vector-SR-v*-Release.zip \
+            zygisk/release/Vector-SR-v*-Debug.zip
 
       # Five is what a tester needs: enough to bisect a regression across a few days, few enough
       # that the releases page is still mostly releases. Sorted by version code, which is the commit

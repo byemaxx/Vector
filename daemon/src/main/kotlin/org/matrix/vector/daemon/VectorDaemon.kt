@@ -26,6 +26,7 @@ import org.matrix.vector.daemon.data.FileSystem
 import org.matrix.vector.daemon.env.CliSocketServer
 import org.matrix.vector.daemon.env.Dex2OatServer
 import org.matrix.vector.daemon.env.LogcatMonitor
+import org.matrix.vector.daemon.ipc.SystemServerRecoveryCoordinator
 import org.matrix.vector.daemon.ipc.BRIDGE_TRANSACTION_CODE
 import org.matrix.vector.daemon.ipc.ManagerService
 import org.matrix.vector.daemon.ipc.SystemServerService
@@ -80,7 +81,10 @@ object VectorDaemon {
 
     // Squat on the proxy service name immediately, which creates the early IPC channel of
     // FrameworkService for our Zygisk module during system_server specialization.
-    SystemServerService.registerProxyService(proxyServiceName)
+    if (!SystemServerService.registerProxyService(proxyServiceName)) {
+      Log.e(TAG, "Unable to claim proxy service `$proxyServiceName`")
+      kotlin.system.exitProcess(1)
+    }
 
     // Start Environmental Daemons
     LogcatMonitor.start()
@@ -110,11 +114,14 @@ object VectorDaemon {
     val isVerboseLog = ManagerService.isVerboseLogEnabled()
 
     // Setup IPC channel for applications by injecting DaemonService binder
-    sendToBridge(VectorService.asBinder(), false, systemServerMaxRetry)
+    SystemServerRecoveryCoordinator.requestInitialInjection()
 
     if (!isVerboseLog) {
       LogcatMonitor.stopVerbose()
     }
+
+    runCatching { Os.seteuid(1000) }
+        .onFailure { Log.e(TAG, "Failed to drop main thread euid to 1000", it) }
 
     Looper.loop()
     throw RuntimeException("Main thread loop unexpectedly exited")
@@ -127,108 +134,8 @@ object VectorDaemon {
     }
   }
 
-  // The bridge is setup in `system_server` via Zygisk API
-  @Suppress("DEPRECATION")
-  private fun sendToBridge(
-      binder: IBinder,
-      isRestart: Boolean,
-      restartRetry: Int,
-  ) {
-    check(Looper.myLooper() == Looper.getMainLooper()) {
-      "sendToBridge MUST run on the main thread!"
-    }
+  // The bridge is setup via SystemServerRecoveryCoordinator
 
-    Os.seteuid(0)
-
-    runCatching {
-          var bridgeService: IBinder?
-          if (isRestart) Log.w(TAG, "system_server restarted...")
-
-          while (true) {
-            bridgeService = ServiceManager.getService(bridgeServiceName)
-            if (bridgeService?.pingBinder() == true) break
-            Log.i(TAG, "`$bridgeServiceName` service not ready, waiting 1s...")
-            Thread.sleep(1000)
-          }
-
-          // Setup death recipient to handle system_server crashes
-          val deathRecipient =
-              object : IBinder.DeathRecipient {
-                override fun binderDied() {
-                  Log.w(TAG, "System Server died! Clearing caches and re-injecting...")
-                  bridgeService.unlinkToDeath(this, 0)
-                  clearSystemCaches()
-                  SystemServerService.binderDied() // Cleanup old references
-                  // Re-claim the service name immediately to ensure that when system_server
-                  // restarts, our proxy is already there for the Zygisk module to find.
-                  ServiceManager.addService(proxyServiceName, SystemServerService)
-                  ManagerService.guard = null // Remove dead guard
-                  Handler(Looper.getMainLooper()).post {
-                    sendToBridge(binder, true, restartRetry - 1)
-                  }
-                }
-              }
-          bridgeService.linkToDeath(deathRecipient, 0)
-
-          // Try sending the Binder payload (up to 3 times)
-          var success = false
-          for (i in 0 until 3) {
-            val data = Parcel.obtain()
-            val reply = Parcel.obtain()
-            try {
-              data.writeInt(ACTION_SEND_BINDER)
-              data.writeStrongBinder(binder)
-              success = bridgeService.transact(BRIDGE_TRANSACTION_CODE, data, reply, 0) == true
-              reply.readException()
-              if (success) break
-            } finally {
-              data.recycle()
-              reply.recycle()
-            }
-            Log.w(TAG, "No response from bridge, retrying...")
-            Thread.sleep(1000)
-          }
-
-          if (success) {
-            Log.i(TAG, "Successfully injected Vector IPC binder for applications.")
-          } else {
-            Log.e(TAG, "Failed to inject VectorService into system_server")
-            if (restartRetry > 0) restartSystemServer()
-          }
-        }
-        .onFailure { Log.e(TAG, "Error during injecting DaemonService", it) }
-    Os.seteuid(1000)
-  }
-
-  private fun clearSystemCaches() {
-    Log.i(TAG, "Clearing ServiceManager and ActivityManager caches...")
-    runCatching {
-          // Clear ServiceManager.sServiceManager
-          var field = ServiceManager::class.java.getDeclaredField("sServiceManager")
-          field.isAccessible = true
-          field.set(null, null)
-
-          // Clear ServiceManager.sCache
-          field = ServiceManager::class.java.getDeclaredField("sCache")
-          field.isAccessible = true
-          val sCache = field.get(null)
-          if (sCache is MutableMap<*, *>) {
-            sCache.clear()
-          }
-
-          // Clear ActivityManager.IActivityManagerSingleton
-          field = ActivityManager::class.java.getDeclaredField("IActivityManagerSingleton")
-          field.isAccessible = true
-          val singleton = field.get(null)
-          if (singleton != null) {
-            val mInstanceField =
-                Class.forName("android.util.Singleton").getDeclaredField("mInstance")
-            mInstanceField.isAccessible = true
-            synchronized(singleton) { mInstanceField.set(singleton, null) }
-          }
-        }
-        .onFailure { Log.w(TAG, "Failed to clear system caches via reflection", it) }
-  }
 
   /**
    * Brings the framework down and up without rebooting the device.
@@ -236,8 +143,7 @@ object VectorDaemon {
    * `system_server` is forked from the *primary* zygote, so restarting that is what restarts the
    * framework — on a 64/32 device the primary init service is still called `zygote` (it runs
    * app_process64) and `zygote_secondary` is the 32-bit one. Restarting the secondary leaves
-   * system_server running, which is right for [restartSystemServer]'s own purpose and wrong for
-   * this one; they are separate functions for that reason.
+   * system_server running, so it cannot be used for a framework restart.
    *
    * Everything on screen dies with it. The caller is expected to have said so first.
    */
@@ -246,14 +152,9 @@ object VectorDaemon {
     SystemProperties.set("ctl.restart", "zygote")
   }
 
-  fun restartSystemServer() {
-    Log.w(TAG, "Restarting system_server...")
-    val restartTarget =
-        if (Build.SUPPORTED_64_BIT_ABIS.isNotEmpty() && Build.SUPPORTED_32_BIT_ABIS.isNotEmpty()) {
-          "zygote_secondary"
-        } else {
-          "zygote"
-        }
-    SystemProperties.set("ctl.restart", restartTarget)
+  /** Recreates system_server, which is always forked from the primary zygote. */
+  fun restartPrimaryZygoteForSystemServerRecovery() {
+    Log.w(TAG, "Restarting primary zygote to recreate system_server")
+    SystemProperties.set("ctl.restart", "zygote")
   }
 }

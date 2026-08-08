@@ -1,7 +1,7 @@
 id=zygisk_vector
-name=Vector
+name=Vector-SR
 version=${versionName} (${versionCode}-${versionHash})
 versionCode=${versionCode}
-author=JingMatrix
+author=byemaxx
 description=A modern, Xposed-compatible framework for Android application hooking. (Android 8.1 ~ 17)
-updateJson=https://raw.githubusercontent.com/JingMatrix/Vector/master/zygisk/update.json
+updateJson=https://raw.githubusercontent.com/byemaxx/Vector-SR/update-metadata/zygisk/update.json

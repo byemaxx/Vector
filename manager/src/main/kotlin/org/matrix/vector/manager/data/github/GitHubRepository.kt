@@ -924,8 +924,8 @@ class GitHubRepository(
             .getOrDefault(0L)
 
     companion object {
-        const val OWNER = "JingMatrix"
-        const val REPO = "$OWNER/Vector"
+        const val OWNER = "byemaxx"
+        const val REPO = "$OWNER/Vector-SR"
         const val REPO_URL = "https://github.com/$REPO"
         const val ISSUES_URL = "$REPO_URL/issues"
         const val PULLS_URL = "$REPO_URL/pulls"
@@ -949,7 +949,7 @@ class GitHubRepository(
          * The release list still carries the pre-rename LSPosed builds, whose version codes are
          * from a different and higher numbering; see `versionCode()`.
          */
-        private const val ZIP_PREFIX = "Vector-"
+        private const val ZIP_PREFIX = "Vector-SR-"
 
         /** CI keeps five; a few extra are fetched so a stable release among them costs nothing. */
         private const val CANARY_FETCH = 12

@@ -308,9 +308,10 @@ lsplant::ScopedLocalRef<jobject> IPCBridge::RequestSystemServerBinder(
     lsplant::ScopedLocalRef<jobject> binder = {env, nullptr};
 
     // The daemon process and system_server specialization run in parallel.
-    // On slower devices, the daemon may take several seconds to call addService.
-    // We poll for up to 10 seconds to ensure the early IPC channel for system_server is available.
-    const int max_retry = 10;
+    // The daemon and system_server specialization run concurrently. On slower devices, service
+    // registration can take longer than the specialization path, especially during soft restart.
+    constexpr int retry_interval_seconds = 1;
+    constexpr int max_retry = 20;
     for (int i = 0; i < max_retry; ++i) {
         binder = lsplant::JNI_CallStaticObjectMethod(env, service_manager_class_,
                                                      get_service_method_, service_name.get());
@@ -318,12 +319,15 @@ lsplant::ScopedLocalRef<jobject> IPCBridge::RequestSystemServerBinder(
             LOGI("Got system server binder via {} on attempt {}.", bridgeServiceName.data(), i + 1);
             return binder;
         }
-        LOGW("Failed to get system server binder via {}, will retry in 1 second...",
-             bridgeServiceName.data());
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        if (i + 1 < max_retry) {
+            LOGW("Failed to get system server binder via {}, will retry in {} second...",
+                 bridgeServiceName.data(), retry_interval_seconds);
+            std::this_thread::sleep_for(std::chrono::seconds(retry_interval_seconds));
+        }
     }
 
-    LOGE("Failed to get system server binder after {} attempts. Aborting.", max_retry);
+    LOGE("Failed to get system server binder after {} attempts (~{} seconds). Aborting.", max_retry,
+         max_retry * retry_interval_seconds);
     return {env, nullptr};
 }
 

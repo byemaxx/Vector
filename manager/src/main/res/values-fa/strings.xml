@@ -22,7 +22,7 @@
     <string name="status_open_details">باز کردن وضعیت سامانه</string>
 
     <string name="issue_sepolicy_title">سیاست SELinux بارگذاری نشده است</string>
-    <string name="issue_sepolicy_summary">برخی قابلیت‌ها کار نخواهند کرد. معمولاً یعنی پیاده‌سازی روت قواعد Vector را اعمال نکرده است.</string>
+    <string name="issue_sepolicy_summary">برخی قابلیت‌ها کار نخواهند کرد. معمولاً یعنی پیاده‌سازی روت قواعد Vector-SR را اعمال نکرده است.</string>
     <string name="issue_system_server_title">تزریق به چارچوب سامانه ناموفق بود</string>
     <string name="issue_system_server_summary">ماژول‌ها نمی‌توانند به سرویس‌های سامانه قلاب بزنند. این کمیاب است و معمولاً ماژول روت دیگری مزاحمت ایجاد می‌کند.</string>
     <string name="issue_dex2oat_title">پوشش dex2oat در دسترس نیست</string>
@@ -45,7 +45,7 @@
     <string name="info_injected">تزریق‌شده</string>
     <string name="info_not_injected">تزریق‌نشده</string>
     <string name="status_notification">اعلان وضعیت</string>
-    <string name="status_notification_summary">اعلانی ماندگار که نشان می‌دهد Vector در حال اجراست.</string>
+    <string name="status_notification_summary">اعلانی ماندگار که نشان می‌دهد Vector-SR در حال اجراست.</string>
     <string name="action_copy_all">رونوشت همه</string>
     <string name="copied">در بریده‌دان رونوشت شد</string>
 
@@ -124,7 +124,7 @@
     <string name="modules_incompatible">به libxposed API %1$d نیاز دارد که این چارچوب ارائه نمی‌کند.</string>
     <string name="modules_incompatible_legacy">به واسط Xposed %1$d نیاز دارد که این چارچوب فراهم نمی‌کند.</string>
     <string name="modules_api_behind">برای libxposed API %1$d ساخته شده است. API %2$d رابط را تغییر داد، پس ممکن است این ماژول کامل کار نکند.</string>
-    <string name="modules_no_daemon">‏Vector در حال اجرا نیست، پس فهرست ماژول‌ها در دسترس نیست. برای دیدن علت، وضعیت سامانه را از خانه باز کنید.</string>
+    <string name="modules_no_daemon">‏Vector-SR در حال اجرا نیست، پس فهرست ماژول‌ها در دسترس نیست. برای دیدن علت، وضعیت سامانه را از خانه باز کنید.</string>
 
     <string name="web_open_external">باز کردن در مرورگر</string>
 
@@ -147,7 +147,7 @@
         <item quantity="other">%1$d ماه اخیر</item>
     </plurals>
     <string name="settings_open_externally">باز کردن پیوندها در مرورگر</string>
-    <string name="settings_open_externally_summary">خاموش: صفحه‌های GitHub درون Vector باز می‌شوند.</string>
+    <string name="settings_open_externally_summary">خاموش: صفحه‌های GitHub درون Vector-SR باز می‌شوند.</string>
 
     <string name="scope_use_recommended">همان چیزی که ماژول می‌خواهد</string>
     <string name="scope_select_visible">گزینش همهٔ موارد نمایان</string>
@@ -260,7 +260,7 @@
     <string name="report_save_with_root">ذخیرهٔ پوشهٔ گزارش‌ها (نیازمند روت)</string>
     <string name="report_saved_to">در %1$s ذخیره شد</string>
     <string name="report_see_guide">راهنمای کامل در همان مسئله</string>
-    <string name="report_root_refused">روت رد شد. در مدیر روت خود به Vector اجازه دهید و دوباره تلاش کنید%1$s</string>
+    <string name="report_root_refused">روت رد شد. در مدیر روت خود به Vector-SR اجازه دهید و دوباره تلاش کنید%1$s</string>
     <string name="home_custom_build">ساخت شخصی — جلوتر از master</string>
     <string name="language_title">زبان</string>
     <string name="language_system">پیش‌فرض سامانه</string>
@@ -268,7 +268,7 @@
 
     <string name="language_translated_by">ترجمه: %1$s</string>
     <string name="language_help_short">ترجمه</string>
-    <string name="language_help">در ترجمهٔ Vector کمک کنید</string>
+    <string name="language_help">در ترجمهٔ Vector-SR کمک کنید</string>
 
     <string name="update_title">به‌روزرسانی چارچوب</string>
     <string name="update_channel_canary">ساخت canary</string>
@@ -283,7 +283,7 @@
     <string name="update_none">به‌روزرسانی‌ای در دسترس نیست.</string>
     <string name="update_no_notes">این انتشار یادداشتی منتشر نکرده است.</string>
     <string name="update_no_root">هیچ پیاده‌سازی روتی یافت نشد، پس چیزی نمی‌توان نصب کرد.</string>
-    <string name="update_root_multiple">دو پیاده‌سازی روت یافت شد. Vector حدس نمی‌زند کدام‌یک ماژول را مدیریت می‌کند.</string>
+    <string name="update_root_multiple">دو پیاده‌سازی روت یافت شد. Vector-SR حدس نمی‌زند کدام‌یک ماژول را مدیریت می‌کند.</string>
     <string name="update_failed_start">نصب‌کننده اجرا نشد.</string>
     <string name="update_failed_download">به‌روزرسانی بارگیری نشد.</string>
     <string name="update_failed_exit">نصب‌کننده شکست خورد (کد %1$d).</string>
@@ -389,7 +389,7 @@
     <string name="crash_message">پیام</string>
     <string name="crash_where">کجا</string>
     <string name="crash_when">چه زمانی</string>
-    <string name="crash_where_unknown">در هیچ‌جای کد خود Vector</string>
+    <string name="crash_where_unknown">در هیچ‌جای کد خود Vector-SR</string>
     <string name="crash_when_value">%1$s در %2$s</string>
     <string name="crash_open_trace">دیدن رد خطا</string>
     <string name="crash_trace">خرابی</string>
@@ -423,8 +423,8 @@
     <string name="settings_doh_fell_back">دسترسی به Cloudflare ممکن نشد (%1$s)، بنابراین تا پایان این نشست از تحلیل‌گر شبکه استفاده می‌شود.</string>
     <string name="settings_doh_retry">تلاش دوباره</string>
 
-    <string name="launcher_title">چگونه Vector را باز کنیم</string>
-    <string name="launcher_body">Vector به‌عنوان برنامه نصب نشده است، پس لانچر چیزی برای نشان دادن ندارد. اینها راه‌های بازگشت به آن هستند.</string>
+    <string name="launcher_title">چگونه Vector-SR را باز کنیم</string>
+    <string name="launcher_body">Vector-SR به‌عنوان برنامه نصب نشده است، پس لانچر چیزی برای نشان دادن ندارد. اینها راه‌های بازگشت به آن هستند.</string>
     <string name="launcher_shortcut">میان‌بر در صفحهٔ اصلی</string>
     <string name="launcher_shortcut_create">ساختن</string>
     <string name="launcher_shortcut_unsupported">لانچر شما میان‌بر سنجاق‌شده نمی‌پذیرد.</string>
@@ -433,15 +433,15 @@
     <string name="launcher_install">نصب به‌عنوان برنامه</string>
     <string name="launcher_install_action">نصب</string>
     <string name="launcher_install_reinstall">نصب دوباره</string>
-    <string name="launcher_install_done">Vector نصب شد. آن را از لانچر باز کنید.</string>
-    <string name="launcher_install_failed">نصب Vector ممکن نشد.</string>
-    <string name="launcher_install_conflict">نسخه‌ای از Vector که با کلیدی دیگر امضا شده از پیش نصب است. پیش از آنکه این یکی جا بگیرد باید حذف شود.</string>
+    <string name="launcher_install_done">Vector-SR نصب شد. آن را از لانچر باز کنید.</string>
+    <string name="launcher_install_failed">نصب Vector-SR ممکن نشد.</string>
+    <string name="launcher_install_conflict">نسخه‌ای از Vector-SR که با کلیدی دیگر امضا شده از پیش نصب است. پیش از آنکه این یکی جا بگیرد باید حذف شود.</string>
     <string name="launcher_install_remove">حذف آن</string>
-    <string name="launcher_install_diverged">نسخهٔ نصب‌شده ساختی دیگر از Vector است — همانی نیست که اینجا اجرا می‌شود. نصب دوباره جای آن را می‌گیرد.</string>
+    <string name="launcher_install_diverged">نسخهٔ نصب‌شده ساختی دیگر از Vector-SR است — همانی نیست که اینجا اجرا می‌شود. نصب دوباره جای آن را می‌گیرد.</string>
     <string name="launcher_route_available">در دسترس</string>
-    <string name="launcher_note">می‌توانید %1$s را هم شماره‌گیری کنید، یا Vector را از دکمهٔ کنش در %2$s باز کنید.</string>
+    <string name="launcher_note">می‌توانید %1$s را هم شماره‌گیری کنید، یا Vector-SR را از دکمهٔ کنش در %2$s باز کنید.</string>
     <string name="launcher_root_generic">مدیر روت شما</string>
-    <string name="launcher_prompt_title">Vector هنوز نمادی ندارد</string>
-    <string name="launcher_prompt_body">Vector به‌جای آنکه نصب شده باشد درون فرایندی دیگر اجرا می‌شود، پس چیزی در لانچر پیدا نمی‌شود و راه روشنی برای بازگشت به آن نیست. به آن میان‌بری در صفحهٔ اصلی بدهید، یا آن را مانند برنامه‌ای معمولی نصب کنید.</string>
+    <string name="launcher_prompt_title">Vector-SR هنوز نمادی ندارد</string>
+    <string name="launcher_prompt_body">Vector-SR به‌جای آنکه نصب شده باشد درون فرایندی دیگر اجرا می‌شود، پس چیزی در لانچر پیدا نمی‌شود و راه روشنی برای بازگشت به آن نیست. به آن میان‌بری در صفحهٔ اصلی بدهید، یا آن را مانند برنامه‌ای معمولی نصب کنید.</string>
     <string name="launcher_prompt_never">دیگر پرسیده نشود</string>
 </resources>

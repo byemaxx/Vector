@@ -22,7 +22,7 @@
     <string name="status_open_details">Sistem durumunu aç</string>
 
     <string name="issue_sepolicy_title">SELinux ilkesi yüklenmedi</string>
-    <string name="issue_sepolicy_summary">Bazı özellikler çalışmayacak. Bu genellikle root uygulamasının Vector\'ün ilke kurallarını uygulamadığı anlamına gelir.</string>
+    <string name="issue_sepolicy_summary">Bazı özellikler çalışmayacak. Bu genellikle root uygulamasının Vector-SR\'ün ilke kurallarını uygulamadığı anlamına gelir.</string>
     <string name="issue_system_server_title">Sistem çatısına enjeksiyon başarısız</string>
     <string name="issue_system_server_summary">Modüller sistem servislerine hook takamıyor. Nadirdir; genellikle araya giren başka bir root modülünden kaynaklanır.</string>
     <string name="issue_dex2oat_title">dex2oat sarmalayıcısı kullanılamıyor</string>
@@ -45,7 +45,7 @@
     <string name="info_injected">Enjekte edildi</string>
     <string name="info_not_injected">Enjekte edilmedi</string>
     <string name="status_notification">Durum bildirimi</string>
-    <string name="status_notification_summary">Vector\'ün çalıştığını gösteren kalıcı bir bildirim.</string>
+    <string name="status_notification_summary">Vector-SR\'ün çalıştığını gösteren kalıcı bir bildirim.</string>
     <string name="action_copy_all">Tümünü kopyala</string>
     <string name="copied">Panoya kopyalandı</string>
 
@@ -124,7 +124,7 @@
     <string name="modules_incompatible">libxposed API %1$d gerekiyor; bu çerçeve onu sağlamıyor.</string>
     <string name="modules_incompatible_legacy">Xposed API %1$d gerekiyor; bu çatı onu sağlamıyor.</string>
     <string name="modules_api_behind">libxposed API %1$d için derlendi. API %2$d arayüzü değiştirdi; bu modül tam çalışmayabilir.</string>
-    <string name="modules_no_daemon">Vector çalışmıyor, bu yüzden modül listesi alınamıyor. Nedenini görmek için Ana sayfadan sistem durumunu açın.</string>
+    <string name="modules_no_daemon">Vector-SR çalışmıyor, bu yüzden modül listesi alınamıyor. Nedenini görmek için Ana sayfadan sistem durumunu açın.</string>
 
     <string name="web_open_external">Tarayıcıda aç</string>
 
@@ -147,7 +147,7 @@
         <item quantity="other">Son %1$d ay</item>
     </plurals>
     <string name="settings_open_externally">Bağlantıları tarayıcıda aç</string>
-    <string name="settings_open_externally_summary">Kapalı: GitHub sayfaları Vector içinde açılır.</string>
+    <string name="settings_open_externally_summary">Kapalı: GitHub sayfaları Vector-SR içinde açılır.</string>
 
     <string name="scope_use_recommended">Modülün istediğini kullan</string>
     <string name="scope_select_visible">Görünenlerin tümünü seç</string>
@@ -260,7 +260,7 @@
     <string name="report_save_with_root">Günlük klasörünü kaydet (root gerekir)</string>
     <string name="report_saved_to">%1$s konumuna kaydedildi</string>
     <string name="report_see_guide">Tam kılavuz sorunda</string>
-    <string name="report_root_refused">Root reddedildi. Root yöneticinizde Vector\'e izin verip yeniden deneyin%1$s</string>
+    <string name="report_root_refused">Root reddedildi. Root yöneticinizde Vector-SR\'e izin verip yeniden deneyin%1$s</string>
     <string name="home_custom_build">Özel derleme — master\'ın ilerisinde</string>
     <string name="language_title">Dil</string>
     <string name="language_system">Sistem varsayılanı</string>
@@ -268,7 +268,7 @@
 
     <string name="language_translated_by">Çeviren: %1$s</string>
     <string name="language_help_short">Çevir</string>
-    <string name="language_help">Vector\'ü çevirmeye yardım edin</string>
+    <string name="language_help">Vector-SR\'ü çevirmeye yardım edin</string>
 
     <string name="update_title">Çatı güncellemesi</string>
     <string name="update_channel_canary">canary derlemesi</string>
@@ -283,7 +283,7 @@
     <string name="update_none">Kullanılabilir güncelleme yok.</string>
     <string name="update_no_notes">Bu sürüm için not yayımlanmamış.</string>
     <string name="update_no_root">Hiçbir root uygulaması bulunamadı, dolayısıyla kurulacak bir şey yok.</string>
-    <string name="update_root_multiple">İki root uygulaması bulundu. Vector modülü hangisinin yönettiğini tahmin etmez.</string>
+    <string name="update_root_multiple">İki root uygulaması bulundu. Vector-SR modülü hangisinin yönettiğini tahmin etmez.</string>
     <string name="update_failed_start">Kurulum programı başlatılamadı.</string>
     <string name="update_failed_download">Güncelleme indirilemedi.</string>
     <string name="update_failed_exit">Kurulum programı başarısız oldu (çıkış %1$d).</string>
@@ -389,7 +389,7 @@
     <string name="crash_message">İleti</string>
     <string name="crash_where">Nerede</string>
     <string name="crash_when">Ne zaman</string>
-    <string name="crash_where_unknown">Vector\'ün kendi kodunun hiçbir yerinde</string>
+    <string name="crash_where_unknown">Vector-SR\'ün kendi kodunun hiçbir yerinde</string>
     <string name="crash_when_value">%1$s, %2$s iş parçacığında</string>
     <string name="crash_open_trace">Yığın izini gör</string>
     <string name="crash_trace">Çökme</string>
@@ -423,8 +423,8 @@
     <string name="settings_doh_fell_back">Cloudflare\'a ulaşılamadı (%1$s), bu oturumun kalanında ağın çözümleyicisi kullanılacak.</string>
     <string name="settings_doh_retry">Yeniden dene</string>
 
-    <string name="launcher_title">Vector nasıl açılır</string>
-    <string name="launcher_body">Vector uygulama olarak kurulu değil, bu yüzden başlatıcınızın gösterecek bir şeyi yok. Geri dönmenin yolları şunlar.</string>
+    <string name="launcher_title">Vector-SR nasıl açılır</string>
+    <string name="launcher_body">Vector-SR uygulama olarak kurulu değil, bu yüzden başlatıcınızın gösterecek bir şeyi yok. Geri dönmenin yolları şunlar.</string>
     <string name="launcher_shortcut">Ana ekran kısayolu</string>
     <string name="launcher_shortcut_create">Oluştur</string>
     <string name="launcher_shortcut_unsupported">Başlatıcınız sabitlenmiş kısayolları kabul etmiyor.</string>
@@ -433,15 +433,15 @@
     <string name="launcher_install">Uygulama olarak kur</string>
     <string name="launcher_install_action">Kur</string>
     <string name="launcher_install_reinstall">Yeniden kur</string>
-    <string name="launcher_install_done">Vector kuruldu. Başlatıcınızdan açabilirsiniz.</string>
-    <string name="launcher_install_failed">Vector kurulamadı.</string>
-    <string name="launcher_install_conflict">Farklı bir anahtarla imzalanmış bir Vector kopyası zaten kurulu. Bunun sığması için önce o kaldırılmalı.</string>
+    <string name="launcher_install_done">Vector-SR kuruldu. Başlatıcınızdan açabilirsiniz.</string>
+    <string name="launcher_install_failed">Vector-SR kurulamadı.</string>
+    <string name="launcher_install_conflict">Farklı bir anahtarla imzalanmış bir Vector-SR kopyası zaten kurulu. Bunun sığması için önce o kaldırılmalı.</string>
     <string name="launcher_install_remove">Kaldır</string>
-    <string name="launcher_install_diverged">Kurulu kopya Vector\'ün farklı bir derlemesi — burada çalışan değil. Yeniden kurmak onu değiştirir.</string>
+    <string name="launcher_install_diverged">Kurulu kopya Vector-SR\'ün farklı bir derlemesi — burada çalışan değil. Yeniden kurmak onu değiştirir.</string>
     <string name="launcher_route_available">Kullanılabilir</string>
-    <string name="launcher_note">Ayrıca %1$s numarasını çevirebilir ya da Vector\'ü %2$s içindeki eylem düğmesinden açabilirsiniz.</string>
+    <string name="launcher_note">Ayrıca %1$s numarasını çevirebilir ya da Vector-SR\'ü %2$s içindeki eylem düğmesinden açabilirsiniz.</string>
     <string name="launcher_root_generic">root yöneticiniz</string>
-    <string name="launcher_prompt_title">Vector\'ün henüz bir simgesi yok</string>
-    <string name="launcher_prompt_body">Vector kurulmak yerine başka bir sürecin içinde çalışır; bu yüzden başlatıcınızda hiçbir şey görünmez ve geri dönmenin bariz bir yolu yoktur. Ona ana ekranda bir kısayol verin ya da sıradan bir uygulama olarak kurun.</string>
+    <string name="launcher_prompt_title">Vector-SR\'ün henüz bir simgesi yok</string>
+    <string name="launcher_prompt_body">Vector-SR kurulmak yerine başka bir sürecin içinde çalışır; bu yüzden başlatıcınızda hiçbir şey görünmez ve geri dönmenin bariz bir yolu yoktur. Ona ana ekranda bir kısayol verin ya da sıradan bir uygulama olarak kurun.</string>
     <string name="launcher_prompt_never">Bir daha sorma</string>
 </resources>

@@ -19,7 +19,7 @@
     <string name="status_checking">Проверка…</string>
     <string name="status_open_details">Открыть состояние системы</string>
     <string name="issue_sepolicy_title">Политика SELinux не загружена</string>
-    <string name="issue_sepolicy_summary">Часть возможностей не будет работать. Обычно это значит, что root-решение не применило правила Vector.</string>
+    <string name="issue_sepolicy_summary">Часть возможностей не будет работать. Обычно это значит, что root-решение не применило правила Vector-SR.</string>
     <string name="issue_system_server_title">Не удалось внедриться в системный фреймворк</string>
     <string name="issue_system_server_summary">Модули не могут перехватывать системные службы. Это редкость, и обычно причина — вмешательство другого root-модуля.</string>
     <string name="issue_dex2oat_title">Обёртка оптимизатора dex недоступна</string>
@@ -41,7 +41,7 @@
     <string name="info_injected">Внедрён</string>
     <string name="info_not_injected">Не внедрён</string>
     <string name="status_notification">Уведомление о состоянии</string>
-    <string name="status_notification_summary">Постоянное уведомление о том, что Vector работает.</string>
+    <string name="status_notification_summary">Постоянное уведомление о том, что Vector-SR работает.</string>
     <string name="action_copy_all">Скопировать всё</string>
     <string name="copied">Скопировано в буфер обмена</string>
     <string name="home_quarter_title">Недавняя активность</string>
@@ -124,7 +124,7 @@
     <string name="modules_incompatible">Требуется libxposed API %1$d, которого этот фреймворк не предоставляет.</string>
     <string name="modules_incompatible_legacy">Требуется Xposed API %1$d, которого этот фреймворк не предоставляет.</string>
     <string name="modules_api_behind">Собран под libxposed API %1$d. В API %2$d интерфейс изменился, поэтому модуль может работать не полностью.</string>
-    <string name="modules_no_daemon">Vector не запущен, поэтому список модулей недоступен. Откройте состояние системы с главного экрана, чтобы узнать причину.</string>
+    <string name="modules_no_daemon">Vector-SR не запущен, поэтому список модулей недоступен. Откройте состояние системы с главного экрана, чтобы узнать причину.</string>
     <string name="web_open_external">Открыть в браузере</string>
     <string name="settings_ambience">Фон заголовка</string>
     <string name="ambience_snow">Снег</string>
@@ -146,7 +146,7 @@
         <item quantity="other">Последние %1$d месяцев</item>
     </plurals>
     <string name="settings_open_externally">Открывать ссылки в браузере</string>
-    <string name="settings_open_externally_summary">Выключено: страницы GitHub открываются внутри Vector.</string>
+    <string name="settings_open_externally_summary">Выключено: страницы GitHub открываются внутри Vector-SR.</string>
     <string name="scope_use_recommended">Взять то, что просит модуль</string>
     <string name="scope_select_visible">Выбрать всё показанное</string>
     <string name="scope_clear_visible">Снять со всего показанного</string>
@@ -261,7 +261,7 @@
     <string name="report_save_with_root">Сохранить папку журналов (нужен root)</string>
     <string name="report_saved_to">Сохранено в %1$s</string>
     <string name="report_see_guide">Полное руководство в issue</string>
-    <string name="report_root_refused">В root отказано. Разрешите Vector в вашем root-менеджере и повторите%1$s</string>
+    <string name="report_root_refused">В root отказано. Разрешите Vector-SR в вашем root-менеджере и повторите%1$s</string>
     <string name="home_custom_build">Своя сборка — новее master</string>
 
     <string name="language_title">Язык</string>
@@ -270,7 +270,7 @@
 
     <string name="language_translated_by">Перевод: %1$s</string>
     <string name="language_help_short">Перевести</string>
-    <string name="language_help">Помочь с переводом Vector</string>
+    <string name="language_help">Помочь с переводом Vector-SR</string>
 
     <string name="update_title">Обновление фреймворка</string>
     <string name="update_channel_canary">Сборка canary</string>
@@ -285,7 +285,7 @@
     <string name="update_none">Обновлений нет.</string>
     <string name="update_no_notes">К этому выпуску нет описания.</string>
     <string name="update_no_root">Не найдено ни одной реализации root — прошить нечем.</string>
-    <string name="update_root_multiple">Найдены две реализации root. Vector не станет гадать, какая из них управляет модулем.</string>
+    <string name="update_root_multiple">Найдены две реализации root. Vector-SR не станет гадать, какая из них управляет модулем.</string>
     <string name="update_failed_start">Не удалось запустить установщик.</string>
     <string name="update_failed_download">Не удалось загрузить обновление.</string>
     <string name="update_failed_exit">Установщик завершился с ошибкой (код %1$d).</string>
@@ -391,7 +391,7 @@
     <string name="crash_message">Сообщение</string>
     <string name="crash_where">Где</string>
     <string name="crash_when">Когда</string>
-    <string name="crash_where_unknown">Нигде в коде самого Vector</string>
+    <string name="crash_where_unknown">Нигде в коде самого Vector-SR</string>
     <string name="crash_when_value">%1$s в потоке %2$s</string>
     <string name="crash_open_trace">Посмотреть трассировку</string>
     <string name="crash_trace">Сбой</string>
@@ -427,8 +427,8 @@
     <string name="settings_doh_fell_back">Cloudflare недоступен (%1$s), поэтому до конца этого сеанса используется резолвер сети.</string>
     <string name="settings_doh_retry">Повторить</string>
 
-    <string name="launcher_title">Как открыть Vector</string>
-    <string name="launcher_body">Vector не установлен как приложение, поэтому лаунчеру нечего показывать. Вот как в него вернуться.</string>
+    <string name="launcher_title">Как открыть Vector-SR</string>
+    <string name="launcher_body">Vector-SR не установлен как приложение, поэтому лаунчеру нечего показывать. Вот как в него вернуться.</string>
     <string name="launcher_shortcut">Ярлык на главном экране</string>
     <string name="launcher_shortcut_create">Создать</string>
     <string name="launcher_shortcut_unsupported">Ваш лаунчер не принимает закреплённые ярлыки.</string>
@@ -437,15 +437,15 @@
     <string name="launcher_install">Установить как приложение</string>
     <string name="launcher_install_action">Установить</string>
     <string name="launcher_install_reinstall">Переустановить</string>
-    <string name="launcher_install_done">Vector установлен. Откройте его из лаунчера.</string>
-    <string name="launcher_install_failed">Не удалось установить Vector.</string>
-    <string name="launcher_install_conflict">Уже установлена копия Vector, подписанная другим ключом. Её нужно удалить, прежде чем встанет эта.</string>
+    <string name="launcher_install_done">Vector-SR установлен. Откройте его из лаунчера.</string>
+    <string name="launcher_install_failed">Не удалось установить Vector-SR.</string>
+    <string name="launcher_install_conflict">Уже установлена копия Vector-SR, подписанная другим ключом. Её нужно удалить, прежде чем встанет эта.</string>
     <string name="launcher_install_remove">Удалить её</string>
-    <string name="launcher_install_diverged">Установленная копия — другая сборка Vector, не та, что запущена здесь. Переустановка заменит её.</string>
+    <string name="launcher_install_diverged">Установленная копия — другая сборка Vector-SR, не та, что запущена здесь. Переустановка заменит её.</string>
     <string name="launcher_route_available">Доступно</string>
-    <string name="launcher_note">Ещё можно набрать %1$s или открыть Vector кнопкой действия в %2$s.</string>
+    <string name="launcher_note">Ещё можно набрать %1$s или открыть Vector-SR кнопкой действия в %2$s.</string>
     <string name="launcher_root_generic">вашем root-менеджере</string>
-    <string name="launcher_prompt_title">У Vector пока нет значка</string>
-    <string name="launcher_prompt_body">Vector работает внутри чужого процесса, а не установлен, поэтому в лаунчере ничего не появляется и очевидного пути обратно нет. Добавьте ярлык на главный экран или установите Vector как обычное приложение.</string>
+    <string name="launcher_prompt_title">У Vector-SR пока нет значка</string>
+    <string name="launcher_prompt_body">Vector-SR работает внутри чужого процесса, а не установлен, поэтому в лаунчере ничего не появляется и очевидного пути обратно нет. Добавьте ярлык на главный экран или установите Vector-SR как обычное приложение.</string>
     <string name="launcher_prompt_never">Больше не спрашивать</string>
 </resources>

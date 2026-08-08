@@ -18,7 +18,7 @@
         <activity
             android:name="org.matrix.vector.manager.demo.DemoActivity"
             android:exported="true"
-            android:label="Vector demo states"
+            android:label="Vector-SR demo states"
             android:taskAffinity="org.matrix.vector.manager.demo">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

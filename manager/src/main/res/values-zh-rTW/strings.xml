@@ -22,7 +22,7 @@
     <string name="status_open_details">檢視系統狀態</string>
 
     <string name="issue_sepolicy_title">SELinux 政策未載入</string>
-    <string name="issue_sepolicy_summary">部分功能將無法運作。這通常代表 Root 方案沒有套用 Vector 的政策規則。</string>
+    <string name="issue_sepolicy_summary">部分功能將無法運作。這通常代表 Root 方案沒有套用 Vector-SR 的政策規則。</string>
     <string name="issue_system_server_title">系統框架注入失敗</string>
     <string name="issue_system_server_summary">模組無法掛鉤系統服務。這種情況很少見，通常是其他 Root 模組干擾所致。</string>
     <string name="issue_dex2oat_title">Dex 最佳化器包裝無法使用</string>
@@ -45,7 +45,7 @@
     <string name="info_injected">已注入</string>
     <string name="info_not_injected">未注入</string>
     <string name="status_notification">狀態通知</string>
-    <string name="status_notification_summary">一則常駐通知，用於顯示 Vector 正在執行。</string>
+    <string name="status_notification_summary">一則常駐通知，用於顯示 Vector-SR 正在執行。</string>
     <string name="action_copy_all">全部複製</string>
     <string name="copied">已複製到剪貼簿</string>
 
@@ -119,7 +119,7 @@
     <string name="modules_incompatible">需要 libxposed API %1$d，此框架未提供。</string>
     <string name="modules_incompatible_legacy">需要 Xposed API %1$d，本框架未提供該版本。</string>
     <string name="modules_api_behind">針對 libxposed API %1$d 建置。API %2$d 變更了介面，此模組可能無法完全運作。</string>
-    <string name="modules_no_daemon">Vector 未執行，因此無法列出模組。請從主畫面開啟系統狀態以查看原因。</string>
+    <string name="modules_no_daemon">Vector-SR 未執行，因此無法列出模組。請從主畫面開啟系統狀態以查看原因。</string>
 
     <string name="web_open_external">在瀏覽器中開啟</string>
 
@@ -141,7 +141,7 @@
         <item quantity="other">最近 %1$d 個月</item>
     </plurals>
     <string name="settings_open_externally">以瀏覽器開啟連結</string>
-    <string name="settings_open_externally_summary">關閉時：GitHub 頁面在 Vector 內開啟。</string>
+    <string name="settings_open_externally_summary">關閉時：GitHub 頁面在 Vector-SR 內開啟。</string>
 
     <string name="scope_use_recommended">使用模組建議的範圍</string>
     <string name="scope_select_visible">選取目前顯示的全部</string>
@@ -250,7 +250,7 @@
     <string name="report_save_with_root">儲存日誌資料夾（需要 Root）</string>
     <string name="report_saved_to">已儲存至 %1$s</string>
     <string name="report_see_guide">完整指南見 issue</string>
-    <string name="report_root_refused">Root 要求遭拒。請在你的 Root 管理器中允許 Vector，然後重試%1$s</string>
+    <string name="report_root_refused">Root 要求遭拒。請在你的 Root 管理器中允許 Vector-SR，然後重試%1$s</string>
     <string name="home_custom_build">自訂建置——領先於 master</string>
 
     <string name="language_title">語言</string>
@@ -259,7 +259,7 @@
 
     <string name="language_translated_by">翻譯：%1$s</string>
     <string name="language_help_short">翻譯</string>
-    <string name="language_help">協助翻譯 Vector</string>
+    <string name="language_help">協助翻譯 Vector-SR</string>
 
     <string name="update_title">框架更新</string>
     <string name="update_channel_canary">Canary 版本</string>
@@ -274,7 +274,7 @@
     <string name="update_none">沒有可用更新。</string>
     <string name="update_no_notes">此版本未發布說明。</string>
     <string name="update_no_root">找不到 root 實作，無法刷入。</string>
-    <string name="update_root_multiple">偵測到兩種 root 實作。Vector 不會猜測由哪一個管理模組。</string>
+    <string name="update_root_multiple">偵測到兩種 root 實作。Vector-SR 不會猜測由哪一個管理模組。</string>
     <string name="update_failed_start">無法啟動安裝程式。</string>
     <string name="update_failed_download">無法下載此更新。</string>
     <string name="update_failed_exit">安裝程式失敗（結束碼 %1$d）。</string>
@@ -380,7 +380,7 @@
     <string name="crash_message">訊息</string>
     <string name="crash_where">在哪裡</string>
     <string name="crash_when">何時</string>
-    <string name="crash_where_unknown">不在 Vector 自己的程式碼中</string>
+    <string name="crash_where_unknown">不在 Vector-SR 自己的程式碼中</string>
     <string name="crash_when_value">%1$s，執行緒 %2$s</string>
     <string name="crash_open_trace">查看呼叫堆疊</string>
     <string name="crash_trace">當機</string>
@@ -413,8 +413,8 @@
     <string name="settings_doh_fell_back">無法連線至 Cloudflare（%1$s），本次工作階段的其餘時間將使用網路自帶的解析器。</string>
     <string name="settings_doh_retry">重試</string>
 
-    <string name="launcher_title">如何開啟 Vector</string>
-    <string name="launcher_body">Vector 並未以應用程式的形式安裝，啟動器因此沒有可顯示的圖示。以下是回到它的幾種方式。</string>
+    <string name="launcher_title">如何開啟 Vector-SR</string>
+    <string name="launcher_body">Vector-SR 並未以應用程式的形式安裝，啟動器因此沒有可顯示的圖示。以下是回到它的幾種方式。</string>
     <string name="launcher_shortcut">主畫面捷徑</string>
     <string name="launcher_shortcut_create">建立</string>
     <string name="launcher_shortcut_unsupported">這個啟動器不接受釘選捷徑。</string>
@@ -423,15 +423,15 @@
     <string name="launcher_install">安裝為應用程式</string>
     <string name="launcher_install_action">安裝</string>
     <string name="launcher_install_reinstall">重新安裝</string>
-    <string name="launcher_install_done">Vector 已安裝，可以從啟動器開啟。</string>
-    <string name="launcher_install_failed">無法安裝 Vector。</string>
-    <string name="launcher_install_conflict">裝置上已有一份以其他金鑰簽署的 Vector。必須先解除安裝，這一份才裝得進去。</string>
+    <string name="launcher_install_done">Vector-SR 已安裝，可以從啟動器開啟。</string>
+    <string name="launcher_install_failed">無法安裝 Vector-SR。</string>
+    <string name="launcher_install_conflict">裝置上已有一份以其他金鑰簽署的 Vector-SR。必須先解除安裝，這一份才裝得進去。</string>
     <string name="launcher_install_remove">解除安裝</string>
-    <string name="launcher_install_diverged">已安裝的那份是另一組建的 Vector——並非此處執行的這份。重新安裝即可替換它。</string>
+    <string name="launcher_install_diverged">已安裝的那份是另一組建的 Vector-SR——並非此處執行的這份。重新安裝即可替換它。</string>
     <string name="launcher_route_available">已可用</string>
-    <string name="launcher_note">你也可以撥號 %1$s，或者從 %2$s 的操作按鈕開啟 Vector。</string>
+    <string name="launcher_note">你也可以撥號 %1$s，或者從 %2$s 的操作按鈕開啟 Vector-SR。</string>
     <string name="launcher_root_generic">你的 root 管理員</string>
-    <string name="launcher_prompt_title">Vector 還沒有圖示</string>
-    <string name="launcher_prompt_body">Vector 執行在別的程序裡，而不是被安裝到系統中，所以啟動器上看不到它，也沒有明顯的途徑再開啟它。給它一個主畫面捷徑，或者把它安裝成一般的應用程式。</string>
+    <string name="launcher_prompt_title">Vector-SR 還沒有圖示</string>
+    <string name="launcher_prompt_body">Vector-SR 執行在別的程序裡，而不是被安裝到系統中，所以啟動器上看不到它，也沒有明顯的途徑再開啟它。給它一個主畫面捷徑，或者把它安裝成一般的應用程式。</string>
     <string name="launcher_prompt_never">不再詢問</string>
 </resources>

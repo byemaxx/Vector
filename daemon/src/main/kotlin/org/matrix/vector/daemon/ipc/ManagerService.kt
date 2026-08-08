@@ -67,6 +67,8 @@ object ManagerService : IManagerService.Stub() {
 
   private var managerIntent: Intent? = null
 
+  private val managerLock = Any()
+
   var guard: ManagerGuard? = null
     internal set
 
@@ -86,51 +88,91 @@ object ManagerService : IManagerService.Stub() {
           ) {}
         }
 
-    init {
-      ManagerService.guard = this
-      runCatching {
+    val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    val initialized: Boolean = runCatching {
             binder.linkToDeath(this, 0)
             applyXspaceWorkaround(connection)
+            true
           }
           .onFailure {
             Log.e(TAG, "ManagerGuard initialization failed", it)
-            ManagerService.guard = null
+            runCatching { binder.unlinkToDeath(this, 0) }
+            runCatching { activityManager?.unbindService(connection) }
           }
+          .getOrDefault(false)
+    init {
+      if (initialized) ManagerService.replaceGuard(this) else closed.set(true)
     }
 
     override fun binderDied() {
-      runCatching {
-        binder.unlinkToDeath(this, 0)
-        activityManager?.unbindService(connection)
+      close("binder_died")
+    }
+
+    fun close(reason: String) {
+      if (closed.compareAndSet(false, true)) {
+        Log.d(TAG, "Closing ManagerGuard for pid=$pid uid=$uid, reason=$reason")
+        runCatching { binder.unlinkToDeath(this, 0) }
+        runCatching { activityManager?.unbindService(connection) }
+        ManagerService.clearGuardIfCurrent(this)
       }
-      ManagerService.guard = null
     }
   }
 
-  @Synchronized
+  private fun replaceGuard(next: ManagerGuard) {
+    val previous = synchronized(managerLock) {
+      val current = guard
+      guard = next
+      current
+    }
+    previous?.close("replaced")
+  }
+
+  fun clearGuardIfCurrent(expected: ManagerGuard) {
+    synchronized(managerLock) {
+      if (guard === expected) {
+        guard = null
+      }
+    }
+  }
+
+  fun invalidateForSystemServerRestart() {
+    val currentGuard = synchronized(managerLock) {
+      val current = guard
+      guard = null
+      pendingManager = false
+      managerPid = -1
+      current
+    }
+    currentGuard?.close("system_server_restarted")
+  }
+
   fun preStartManager(): Boolean {
-    Log.v(TAG, "Pre-start parasitic manager.")
-    pendingManager = true
-    managerPid = -1
+    synchronized(managerLock) {
+      Log.v(TAG, "Pre-start parasitic manager.")
+      pendingManager = true
+      managerPid = -1
+    }
     return true
   }
 
-  @Synchronized
   fun tryRegisterManagerProcess(pid: Int, uid: Int, processName: String): Boolean {
-    if (ConfigCache.isManager(uid) && processName == BuildConfig.DEFAULT_MANAGER_PACKAGE_NAME) {
-      if (pendingManager) {
-        Log.v(TAG, "Parasitic manager registered.")
-        pendingManager = false
-      } else {
-        Log.v(TAG, "Starting user-installed manager process.")
+    synchronized(managerLock) {
+      if (ConfigCache.isManager(uid) && processName == BuildConfig.DEFAULT_MANAGER_PACKAGE_NAME) {
+        if (pendingManager) {
+          Log.v(TAG, "Parasitic manager registered.")
+          pendingManager = false
+        } else {
+          Log.v(TAG, "Starting user-installed manager process.")
+        }
+        managerPid = pid
+        return true
       }
-      managerPid = pid
-      return true
     }
     return false
   }
 
-  fun postStartManager(pid: Int): Boolean = pid == managerPid
+  fun postStartManager(pid: Int): Boolean = synchronized(managerLock) { pid == managerPid }
 
   private fun getManagerIntent(): Intent? {
     if (managerIntent != null) return managerIntent
@@ -216,8 +258,9 @@ object ManagerService : IManagerService.Stub() {
         .onFailure { Log.w(TAG, "WebView permission fix failed", it) }
   }
 
-  fun obtainManagerBinder(heartbeat: IBinder, pid: Int, uid: Int): IBinder {
-    ManagerGuard(heartbeat, pid, uid)
+  fun obtainManagerBinder(heartbeat: IBinder, pid: Int, uid: Int): IBinder? {
+    val newGuard = ManagerGuard(heartbeat, pid, uid)
+    if (!newGuard.initialized) return null
     if (ConfigCache.isManager(uid)) {
       ensureWebViewPermission()
     }
@@ -225,7 +268,7 @@ object ManagerService : IManagerService.Stub() {
   }
 
   fun isRunningManager(pid: Int, uid: Int): Boolean =
-      pid == managerPid && ConfigCache.isManager(uid)
+      synchronized(managerLock) { pid == managerPid && ConfigCache.isManager(uid) }
 
   override fun getProtocolVersion() = IManagerService.PROTOCOL_VERSION
 

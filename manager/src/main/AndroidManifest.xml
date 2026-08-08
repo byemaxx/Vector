@@ -41,7 +41,7 @@
                 <category android:name="org.matrix.vector.manager.LAUNCH_MANAGER" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
-            <!-- Lets the system Settings app surface Vector under an app's preferences entry. -->
+            <!-- Lets the system Settings app surface Vector-SR under an app's preferences entry. -->
             <intent-filter>
                 <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
                 <category android:name="android.intent.category.DEFAULT" />

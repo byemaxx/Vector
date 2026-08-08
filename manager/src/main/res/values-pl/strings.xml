@@ -22,7 +22,7 @@
     <string name="status_open_details">Otwórz stan systemu</string>
 
     <string name="issue_sepolicy_title">Nie wczytano zasad SELinux</string>
-    <string name="issue_sepolicy_summary">Część funkcji nie zadziała. Zwykle oznacza to, że implementacja roota nie zastosowała reguł Vectora.</string>
+    <string name="issue_sepolicy_summary">Część funkcji nie zadziała. Zwykle oznacza to, że implementacja roota nie zastosowała reguł Vector-SRa.</string>
     <string name="issue_system_server_title">Wstrzyknięcie do szkieletu systemu nie powiodło się</string>
     <string name="issue_system_server_summary">Moduły nie mogą podpinać się pod usługi systemowe. Zdarza się to rzadko i zwykle przeszkadza inny moduł roota.</string>
     <string name="issue_dex2oat_title">Nakładka dex2oat niedostępna</string>
@@ -45,7 +45,7 @@
     <string name="info_injected">Wstrzyknięty</string>
     <string name="info_not_injected">Niewstrzyknięty</string>
     <string name="status_notification">Powiadomienie o stanie</string>
-    <string name="status_notification_summary">Stałe powiadomienie informujące, że Vector działa.</string>
+    <string name="status_notification_summary">Stałe powiadomienie informujące, że Vector-SR działa.</string>
     <string name="action_copy_all">Kopiuj wszystko</string>
     <string name="copied">Skopiowano do schowka</string>
 
@@ -134,7 +134,7 @@
     <string name="modules_incompatible">Wymaga API libxposed %1$d, którego ten framework nie udostępnia.</string>
     <string name="modules_incompatible_legacy">Wymaga API Xposed %1$d, którego ten szkielet nie udostępnia.</string>
     <string name="modules_api_behind">Zbudowany dla API libxposed %1$d. API %2$d zmieniło interfejs, więc ten moduł może nie działać w pełni.</string>
-    <string name="modules_no_daemon">Vector nie działa, więc lista modułów jest niedostępna. Otwórz stan systemu ze strony startowej, aby zobaczyć dlaczego.</string>
+    <string name="modules_no_daemon">Vector-SR nie działa, więc lista modułów jest niedostępna. Otwórz stan systemu ze strony startowej, aby zobaczyć dlaczego.</string>
 
     <string name="web_open_external">Otwórz w przeglądarce</string>
 
@@ -159,7 +159,7 @@
         <item quantity="other">Ostatnie %1$d miesiąca</item>
     </plurals>
     <string name="settings_open_externally">Otwieraj odnośniki w przeglądarce</string>
-    <string name="settings_open_externally_summary">Wyłączone: strony GitHuba otwierają się wewnątrz Vectora.</string>
+    <string name="settings_open_externally_summary">Wyłączone: strony GitHuba otwierają się wewnątrz Vector-SRa.</string>
 
     <string name="scope_use_recommended">Użyj tego, o co prosi moduł</string>
     <string name="scope_select_visible">Zaznacz wszystko, co widać</string>
@@ -280,7 +280,7 @@
     <string name="report_save_with_root">Zapisz katalog dzienników (wymaga roota)</string>
     <string name="report_saved_to">Zapisano w %1$s</string>
     <string name="report_see_guide">Pełny poradnik w zgłoszeniu</string>
-    <string name="report_root_refused">Odmówiono roota. Zezwól Vectorowi w swoim menedżerze roota i spróbuj ponownie%1$s</string>
+    <string name="report_root_refused">Odmówiono roota. Zezwól Vector-SRowi w swoim menedżerze roota i spróbuj ponownie%1$s</string>
     <string name="home_custom_build">Własna kompilacja — nowsza niż master</string>
     <string name="language_title">Język</string>
     <string name="language_system">Domyślny systemowy</string>
@@ -288,7 +288,7 @@
 
     <string name="language_translated_by">Tłumaczenie: %1$s</string>
     <string name="language_help_short">Tłumacz</string>
-    <string name="language_help">Pomóż tłumaczyć Vectora</string>
+    <string name="language_help">Pomóż tłumaczyć Vector-SRa</string>
 
     <string name="update_title">Aktualizacja szkieletu</string>
     <string name="update_channel_canary">Kompilacja canary</string>
@@ -303,7 +303,7 @@
     <string name="update_none">Brak dostępnych aktualizacji.</string>
     <string name="update_no_notes">To wydanie nie opublikowało informacji.</string>
     <string name="update_no_root">Nie znaleziono żadnej implementacji roota, więc nie ma czym wgrać.</string>
-    <string name="update_root_multiple">Znaleziono dwie implementacje roota. Vector nie będzie zgadywał, która zarządza modułem.</string>
+    <string name="update_root_multiple">Znaleziono dwie implementacje roota. Vector-SR nie będzie zgadywał, która zarządza modułem.</string>
     <string name="update_failed_start">Nie udało się uruchomić instalatora.</string>
     <string name="update_failed_download">Nie udało się pobrać aktualizacji.</string>
     <string name="update_failed_exit">Instalator zawiódł (kod %1$d).</string>
@@ -409,7 +409,7 @@
     <string name="crash_message">Komunikat</string>
     <string name="crash_where">Gdzie</string>
     <string name="crash_when">Kiedy</string>
-    <string name="crash_where_unknown">Nigdzie we własnym kodzie Vectora</string>
+    <string name="crash_where_unknown">Nigdzie we własnym kodzie Vector-SRa</string>
     <string name="crash_when_value">%1$s w %2$s</string>
     <string name="crash_open_trace">Zobacz ślad stosu</string>
     <string name="crash_trace">Awaria</string>
@@ -445,8 +445,8 @@
     <string name="settings_doh_fell_back">Nie udało się połączyć z Cloudflare (%1$s), więc przez resztę tej sesji używany jest resolver sieci.</string>
     <string name="settings_doh_retry">Spróbuj ponownie</string>
 
-    <string name="launcher_title">Jak otworzyć Vectora</string>
-    <string name="launcher_body">Vector nie jest zainstalowany jako aplikacja, więc launcher nie ma czego pokazać. Oto sposoby, by do niego wrócić.</string>
+    <string name="launcher_title">Jak otworzyć Vector-SRa</string>
+    <string name="launcher_body">Vector-SR nie jest zainstalowany jako aplikacja, więc launcher nie ma czego pokazać. Oto sposoby, by do niego wrócić.</string>
     <string name="launcher_shortcut">Skrót na ekranie głównym</string>
     <string name="launcher_shortcut_create">Utwórz</string>
     <string name="launcher_shortcut_unsupported">Twój launcher nie przyjmuje przypiętych skrótów.</string>
@@ -455,15 +455,15 @@
     <string name="launcher_install">Zainstaluj jako aplikację</string>
     <string name="launcher_install_action">Zainstaluj</string>
     <string name="launcher_install_reinstall">Zainstaluj ponownie</string>
-    <string name="launcher_install_done">Vector jest zainstalowany. Otwórz go z launchera.</string>
-    <string name="launcher_install_failed">Nie udało się zainstalować Vectora.</string>
-    <string name="launcher_install_conflict">Jest już zainstalowana kopia Vectora podpisana innym kluczem. Trzeba ją usunąć, zanim ta się zmieści.</string>
+    <string name="launcher_install_done">Vector-SR jest zainstalowany. Otwórz go z launchera.</string>
+    <string name="launcher_install_failed">Nie udało się zainstalować Vector-SRa.</string>
+    <string name="launcher_install_conflict">Jest już zainstalowana kopia Vector-SRa podpisana innym kluczem. Trzeba ją usunąć, zanim ta się zmieści.</string>
     <string name="launcher_install_remove">Usuń ją</string>
-    <string name="launcher_install_diverged">Zainstalowana kopia to inna kompilacja Vectora — nie ta, która tu działa. Ponowna instalacja ją zastąpi.</string>
+    <string name="launcher_install_diverged">Zainstalowana kopia to inna kompilacja Vector-SRa — nie ta, która tu działa. Ponowna instalacja ją zastąpi.</string>
     <string name="launcher_route_available">Dostępne</string>
-    <string name="launcher_note">Możesz też wybrać %1$s albo otworzyć Vectora przyciskiem akcji w %2$s.</string>
+    <string name="launcher_note">Możesz też wybrać %1$s albo otworzyć Vector-SRa przyciskiem akcji w %2$s.</string>
     <string name="launcher_root_generic">Twoim menedżerze roota</string>
-    <string name="launcher_prompt_title">Vector nie ma jeszcze ikony</string>
-    <string name="launcher_prompt_body">Vector działa wewnątrz innego procesu, zamiast być zainstalowany, więc nic nie pojawia się w launcherze i nie ma oczywistej drogi powrotnej. Dodaj mu skrót na ekranie głównym albo zainstaluj go jako zwykłą aplikację.</string>
+    <string name="launcher_prompt_title">Vector-SR nie ma jeszcze ikony</string>
+    <string name="launcher_prompt_body">Vector-SR działa wewnątrz innego procesu, zamiast być zainstalowany, więc nic nie pojawia się w launcherze i nie ma oczywistej drogi powrotnej. Dodaj mu skrót na ekranie głównym albo zainstaluj go jako zwykłą aplikację.</string>
     <string name="launcher_prompt_never">Nie pytaj ponownie</string>
 </resources>

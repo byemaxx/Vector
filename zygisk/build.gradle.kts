@@ -43,9 +43,9 @@ android {
 
         val flags =
             listOf(
-                "-DINJECTED_PACKAGE_NAME='\"${injectedPackageName}\"'",
+                "-DINJECTED_PACKAGE_NAME=${injectedPackageName}",
                 "-DINJECTED_PACKAGE_UID=${injectedPackageUid}",
-                "-DMANAGER_PACKAGE_NAME='\"${defaultManagerPackageName}\"'",
+                "-DMANAGER_PACKAGE_NAME=${defaultManagerPackageName}",
             )
 
         externalNativeBuild {
@@ -90,7 +90,7 @@ androidComponents {
         // Stage all files in a temporary directory inside 'build' before zipping
         val tempModuleDir = project.layout.buildDirectory.dir("module/${variant.name}")
         val zipFileName =
-            "Vector-v${versionNameProvider.get()}-${versionCodeProvider.get()}-$variantCapped.zip"
+            "Vector-SR-v${versionNameProvider.get()}-${versionCodeProvider.get()}-$variantCapped.zip"
 
         // Using Sync ensures that stale files from previous runs are removed.
         val prepareModuleFilesTask =
