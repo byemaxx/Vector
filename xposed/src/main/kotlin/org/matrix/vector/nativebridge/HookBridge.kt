@@ -56,18 +56,42 @@ object HookBridge {
     @JvmStatic @FastNative external fun setTrusted(cookie: Any?): Boolean
 
     /**
-     * Clears the final flag ART reads, so that reflection can write [field] again.
+     * Clears the final flag ART reads, so that reflection will write [field] again.
      *
-     * Android 17 checks the underlying ArtField rather than only the reflective Field object's
-     * accessibility state. [modifiers] must be `field.modifiers`; native code verifies those
-     * flags before changing ACC_FINAL so an unexpected ART layout is rejected safely.
+     * Android 17 refuses every reflective write to a static final field however accessible the
+     * [Field] is, and clearing the reflective copy's flag does not help because the check reads
+     * the ArtField. The write itself stays with reflection, which keeps its conversions and its
+     * exceptions; this only stops it being refused.
      *
-     * Adapted from JingMatrix/Vector commit 44552398db793a6d02b33acbc66978966950ffef.
+     * [modifiers] must be `field.modifiers`. It is checked against the flags about to be written,
+     * so a runtime that lays an ArtField out differently is left alone rather than corrupted.
+     *
+     * Returns false when the field is still final, which is the caller's cue to report the
+     * failure it already had. The field stays writable afterwards.
      */
     @JvmStatic external fun makeFieldWritable(field: Field, modifiers: Int): Boolean
 
+    /** Returns null when [method] carries no hooks at all. */
     @JvmStatic
-    external fun callbackSnapshot(hooker_callback: Class<*>, method: Executable): Array<Array<Any?>>
+    external fun callbackSnapshot(
+        hooker_callback: Class<*>,
+        method: Executable,
+    ): Array<Array<Any?>>?
 
-    @JvmStatic external fun getStaticInitializer(clazz: Class<*>): Method?
+    /**
+     * Locates a class's static initializer without initializing it.
+     * [artMethods] must be the ArtMethod addresses of the class's declared constructors and
+     * methods, which reflection can supply without triggering initialization, and [artMethodSize]
+     * the size of one ArtMethod. One member is enough, which matters because a class whose only
+     * members are the static initializer and an implicit constructor shows just one to reflection.
+     *
+     * Returns null when the class has no static initializer or the method layout is not the one
+     * this relies on.
+     */
+    @JvmStatic
+    external fun findStaticInitializer(
+        clazz: Class<*>,
+        artMethods: LongArray,
+        artMethodSize: Long,
+    ): Executable?
 }
