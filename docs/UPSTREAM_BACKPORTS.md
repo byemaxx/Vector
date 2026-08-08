@@ -63,4 +63,8 @@ The integration branch also contains fixes that are not claimed as verbatim upst
 
 Vector-SR still retains its pre-existing synchronous `IHotReloadTarget` transport. Therefore this backport does **not** claim the newer upstream process-wide asynchronous channel, framework-owned 30-second timeout/outcome protocol, cached-process freezer flow, or canonical system_server hot reload. The in-process generation retirement and atomic hook semantics are aligned independently of that transport choice.
 
+## 2026-08-08 final PR #22 audit batch
+
+The final audit was assembled on a non-PR staging branch so intermediate fixes did not repeatedly trigger the PR workflow. The batch closes generation-retirement registration races, keeps committed retired contexts frozen, corrects the hot-reload commit boundary, completes uninstall/scope-notification cleanup, restores the release XResources source guard, and removes daemon calls that are unsafe on the declared API 27 minimum. The PR head is updated only after this batch is reviewed as one unit.
+
 This table is intentionally conservative. `Ported` means the relevant behavior exists on this branch; it does not claim source-level identity unless the corresponding commit explicitly records a blob-compatible backport.
