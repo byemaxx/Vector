@@ -187,6 +187,21 @@ object VectorService : IDaemonService.Stub() {
           override fun onUidIdle(uid: Int, disabled: Boolean) = ModuleService.uidStarts(uid)
 
           override fun onUidGone(uid: Int, disabled: Boolean) = ModuleService.uidGone(uid)
+
+          // The mask below does not request these callbacks, but the platform Stub declares them
+          // on supported releases. Leaving one abstract can become fatal if an OEM widens dispatch.
+          override fun onUidStateChanged(uid: Int, procState: Int, procStateSeq: Long) {}
+
+          override fun onUidStateChanged(
+              uid: Int,
+              procState: Int,
+              procStateSeq: Long,
+              capability: Int
+          ) {}
+
+          override fun onUidProcAdjChanged(uid: Int) {}
+
+          override fun onUidProcAdjChanged(uid: Int, adj: Int) {}
         }
 
     val which =
