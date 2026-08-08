@@ -1,7 +1,9 @@
 package org.matrix.vector.daemon.data
 
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
 import android.content.pm.PackageParser
+import android.os.Build
 import android.system.Os
 import android.util.Log
 import hidden.HiddenApiBridge
@@ -23,6 +25,12 @@ import org.matrix.vector.daemon.utils.applySqliteHelperWorkaround
 import org.matrix.vector.daemon.utils.getRealUsers
 
 private const val TAG = "VectorConfigCache"
+
+/** PackageInfo.getLongVersionCode() was added in API 28; Vector-SR still supports API 27. */
+@Suppress("DEPRECATION")
+private val PackageInfo.versionCodeCompat: Long
+  get() =
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) longVersionCode else versionCode.toLong()
 
 data class ModuleCodeIdentity(
     val packageName: String,
@@ -170,8 +178,8 @@ object ConfigCache {
 
             // MATCH_ANY_USER may return metadata for users that do not hold the package. Track the
             // actual holders separately and prefer a holder's ApplicationInfo.
-            var pkgInfo: android.content.pm.PackageInfo? = null
-            var anyPkgInfo: android.content.pm.PackageInfo? = null
+            var pkgInfo: PackageInfo? = null
+            var anyPkgInfo: PackageInfo? = null
             for (user in users.sortedBy { it.id }) {
               val info = packageManager?.getPackageInfoCompat(pkgName, MATCH_ALL_FLAGS, user.id)
               if (info?.applicationInfo == null) continue
@@ -199,7 +207,7 @@ object ConfigCache {
                 File(appInfo.sourceDir).parent == File(apkPath).parent) {
 
               val currentIdentity =
-                  buildModuleCodeIdentity(pkgName, pkgInfo.longVersionCode, apkPath)
+                  buildModuleCodeIdentity(pkgName, pkgInfo.versionCodeCompat, apkPath)
               val oldIdentity = moduleCodeIdentities[pkgName]
               if (currentIdentity == oldIdentity) {
                 // appId is device-wide. A secondary user's full uid breaks module self-identity.
@@ -232,7 +240,7 @@ object ConfigCache {
                     packageName = pkgName
                     this.apkPath = apkPath
                     appId = appInfo.uid % PER_USER_RANGE
-                    versionCode = pkgInfo.longVersionCode
+                    versionCode = pkgInfo.versionCodeCompat
                     applicationInfo = appInfo
                     service = oldModule?.service ?: InjectedModuleService(pkgName)
                     file = preLoadedApk
@@ -295,14 +303,14 @@ object ConfigCache {
             // API102 multi-user ownership: never execute a module in a user that does not hold it.
             if (userId !in holders) continue
 
-            val pkgInfo =
+            val targetPkgInfo =
                 packageManager?.getPackageInfoWithComponents(appPkg, MATCH_ALL_FLAGS, userId)
-            if (pkgInfo?.applicationInfo == null) continue
+            if (targetPkgInfo?.applicationInfo == null) continue
 
-            val processNames = pkgInfo.fetchProcesses()
+            val processNames = targetPkgInfo.fetchProcesses()
             if (processNames.isEmpty()) continue
 
-            val appUid = pkgInfo.applicationInfo!!.uid
+            val appUid = targetPkgInfo.applicationInfo!!.uid
 
             for (processName in processNames) {
               addToScope(processName, appUid, module)
