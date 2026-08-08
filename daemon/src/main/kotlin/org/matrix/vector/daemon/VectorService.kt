@@ -266,7 +266,16 @@ object VectorService : IDaemonService.Stub() {
     when (action) {
       Intent.ACTION_PACKAGE_FULLY_REMOVED -> {
         if (moduleName != null) {
-          PreferenceStore.deleteModulePrefs(moduleName, userId, group = null)
+          // A device-wide removal must not leave another user's remote preferences behind to be
+          // resurrected on reinstall. A profile-only uninstall deletes only that profile's rows.
+          val targetUser = if (isRemovedForAllUsers) null else userId
+          PreferenceStore.deleteModulePrefs(moduleName, targetUser, group = null)
+
+          // "Never ask again" is framework-owned state stored under lspd, not under the module's
+          // own preference rows, so deleting the module preferences cannot clear it. A full
+          // uninstall is the user's explicit reset point; a per-user uninstall is not.
+          if (isRemovedForAllUsers) unblockScopeRequests(moduleName)
+
           if (isRemovedForAllUsers && ModuleDatabase.removeModule(moduleName)) {
             isXposedModule = true
           }
@@ -377,7 +386,9 @@ object VectorService : IDaemonService.Stub() {
                   }
               if (granted.isEmpty()) {
                 Log.w(TAG, "No requested scope is still grantable for $packageName")
-                runCatching { callback.onScopeRequestFailed("Requested packages are no longer available") }
+                runCatching {
+                  callback.onScopeRequestFailed("Requested packages are no longer available")
+                }
                 return@runCatching
               }
 
@@ -397,7 +408,9 @@ object VectorService : IDaemonService.Stub() {
 
               if (changed && !ModuleDatabase.setModuleScope(packageName, scopes)) {
                 Log.w(TAG, "Scope approval for $packageName was rejected by daemon policy")
-                runCatching { callback.onScopeRequestFailed("Scope changed before approval completed") }
+                runCatching {
+                  callback.onScopeRequestFailed("Scope changed before approval completed")
+                }
                 return@runCatching
               }
 
@@ -413,11 +426,7 @@ object VectorService : IDaemonService.Stub() {
                 runCatching { callback.onScopeRequestFailed("Request timeout") }
                     .onFailure { Log.w(TAG, "Could not report scope timeout for $packageName", it) }
             "block" -> {
-              val blocked =
-                  PreferenceStore.getModulePrefs("lspd", 0, "config")["scope_request_blocked"]
-                      as? Set<String> ?: emptySet()
-              PreferenceStore.updateModulePref(
-                  "lspd", 0, "config", "scope_request_blocked", blocked + packageName)
+              blockScopeRequests(packageName)
 
               // "Never ask again" applies to every unanswered question from the module, not merely
               // the prompt whose button was pressed.
@@ -440,9 +449,40 @@ object VectorService : IDaemonService.Stub() {
         }
         .onFailure {
           Log.e(TAG, "Failed to process scope request for $packageName", it)
-          runCatching { callback.onScopeRequestFailed(it.message) }
+          // IXposedScopeCallback declares a non-null failure message; Throwable.message does not.
+          runCatching { callback.onScopeRequestFailed(it.message ?: it.toString()) }
         }
 
     NotificationManager.cancelScopeRequest(packageName, userId, scopePackageNames)
+  }
+
+  /** Framework-owned list of modules the user told us never to ask scope for again. */
+  @Suppress("UNCHECKED_CAST")
+  private fun blockedScopeRequests(): Set<String> =
+      PreferenceStore.getModulePrefs("lspd", 0, "config")["scope_request_blocked"] as? Set<String>
+          ?: emptySet()
+
+  private fun blockScopeRequests(packageName: String) {
+    PreferenceStore.updateModulePref(
+        "lspd",
+        0,
+        "config",
+        "scope_request_blocked",
+        blockedScopeRequests() + packageName,
+    )
+  }
+
+  /** A full uninstall resets the persistent "never ask again" decision for a future reinstall. */
+  private fun unblockScopeRequests(packageName: String) {
+    val blocked = blockedScopeRequests()
+    if (packageName !in blocked) return
+    PreferenceStore.updateModulePref(
+        "lspd",
+        0,
+        "config",
+        "scope_request_blocked",
+        blocked - packageName,
+    )
+    Log.i(TAG, "$packageName was fully uninstalled; scope requests are no longer blocked")
   }
 }
