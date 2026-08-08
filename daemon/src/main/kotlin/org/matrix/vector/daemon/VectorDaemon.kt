@@ -41,6 +41,8 @@ object VectorDaemon {
   }
   private val daemonInstanceId = FileSystem.createDaemonInstanceId()
 
+  // Dispatchers.IO: Uses the shared background thread pool.
+  // SupervisorJob(): Ensures one failing task doesn't kill the whole daemon.
   val scope = CoroutineScope(Dispatchers.IO + SupervisorJob() + exceptionHandler)
   val bridgeServiceName = "activity"
 
@@ -77,32 +79,39 @@ object VectorDaemon {
       kotlin.system.exitProcess(1)
     }
 
+    // Setup Main Looper
     Process.setThreadPriority(Process.THREAD_PRIORITY_FOREGROUND)
     @Suppress("DEPRECATION") Looper.prepareMainLooper()
 
+    // Squat on the proxy service name immediately, which creates the early IPC channel of
+    // ApplicationService for our Zygisk module during system_server specialization.
     SystemServerService.registerProxyService(proxyServiceName)
 
+    // Start Environmental Daemons
     LogcatMonitor.start()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) Dex2OatServer.start()
     CliSocketServer.start()
 
+    // Preload Framework DEX in the background
     scope.launch { FileSystem.getPreloadDex(ConfigCache.state.isDexObfuscateEnabled) }
 
+    // Initializes system frameworks inside the daemon process
     ActivityThread.systemMain()
     DdmHandleAppName.setAppName("org.matrix.vector.daemon", 0)
 
+    // Wait for Android core services
     waitForSystemService("package")
-    waitForSystemService("activity")
+    waitForSystemService("activity") // current bridgeServiceName
     waitForSystemService(Context.USER_SERVICE)
     waitForSystemService(Context.APP_OPS_SERVICE)
 
     applyNotificationWorkaround()
 
-    // Read before sendToBridge(), which leaves the daemon main thread at euid 1000.
-    // If the first injection fails, no binder thread may have opened/cached the config database
-    // while root was still available, and reading the preference afterwards can terminate daemon.
+    // Read before sendToBridge(), which leaves the daemon main thread at euid 1000. If the first
+    // injection fails, the config database must already have been opened/cached while root remains.
     val isVerboseLog = ManagerService.isVerboseLog()
 
+    // Setup IPC channel for applications by injecting DaemonService binder
     sendToBridge(VectorService.asBinder(), false, systemServerMaxRetry)
 
     if (!isVerboseLog) {
@@ -120,6 +129,7 @@ object VectorDaemon {
     }
   }
 
+  // The bridge is setup in `system_server` via Zygisk API
   @Suppress("DEPRECATION")
   private fun sendToBridge(
       binder: IBinder,
@@ -157,6 +167,7 @@ object VectorDaemon {
             Thread.sleep(1000)
           }
 
+          // Setup death recipient to handle system_server crashes
           val deathRecipient =
               object : IBinder.DeathRecipient {
                 override fun binderDied() {
@@ -187,12 +198,14 @@ object VectorDaemon {
                           ApplicationService.clearHotReloadTargetsForSoftRestart(
                               "system_server reinjection round=${lease.round}")
                           clearSystemCaches()
+                          // KernelSU soft reboot keeps this daemon alive while Android services
+                          // stop/start; keep the wrapper socket and only refresh the bind mounts.
                           if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                             Dex2OatServer.refreshMount()
                           }
                           SystemServerService.prepareForSystemServerRestart(
                               proxyServiceName, daemonInstanceId, lease.round)
-                          ManagerService.guard = null
+                          ManagerService.guard = null // Remove dead guard
                         }
                         val posted =
                             Handler(Looper.getMainLooper()).post {
@@ -214,6 +227,7 @@ object VectorDaemon {
               }
           bridgeService.linkToDeath(deathRecipient, 0)
 
+          // Try sending the Binder payload (up to 3 times)
           var success = false
           for (i in 0 until 3) {
             val data = Parcel.obtain()
@@ -249,10 +263,12 @@ object VectorDaemon {
   private fun clearSystemCaches() {
     Log.i(TAG, "Clearing ServiceManager and ActivityManager caches...")
     runCatching {
+          // Clear ServiceManager.sServiceManager
           var field = ServiceManager::class.java.getDeclaredField("sServiceManager")
           field.isAccessible = true
           field.set(null, null)
 
+          // Clear ServiceManager.sCache
           field = ServiceManager::class.java.getDeclaredField("sCache")
           field.isAccessible = true
           val sCache = field.get(null)
@@ -260,6 +276,7 @@ object VectorDaemon {
             sCache.clear()
           }
 
+          // Clear ActivityManager.IActivityManagerSingleton
           field = ActivityManager::class.java.getDeclaredField("IActivityManagerSingleton")
           field.isAccessible = true
           val singleton = field.get(null)
