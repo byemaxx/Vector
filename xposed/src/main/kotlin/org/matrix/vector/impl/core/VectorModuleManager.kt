@@ -247,19 +247,20 @@ object VectorModuleManager {
                     override fun getOldHookHandles(): List<XposedInterface.HookHandle> = oldHandles
                 }
 
-            // There is intentionally no rollback past this point. onHotReloaded is allowed to
-            // replace hooks; restoring old entries after one replacement would combine old module
-            // lifecycle state with new native callbacks.
+            // This map assignment is the commit point. Once it happens there is intentionally no
+            // rollback: onHotReloaded may already replace native callbacks, and restoring old Java
+            // state could not undo those swaps. Mark committed immediately so no later bookkeeping
+            // failure can be misclassified as a pre-commit failure and re-enable the retired context.
             moduleStates[module.packageName] = newState
+            committed = true
+
+            oldEntries.forEach(VectorLifecycleManager::detach)
+            newEntries.forEach(VectorLifecycleManager.activeModules::add)
             VectorServiceClient.updatePendingHotReloadVersion(
                 module.packageName,
                 module.versionCode,
             )
-            committed = true
             Log.i(TAG, "COMMITTED package=${module.packageName} generation=${newState.generationId}")
-
-            oldEntries.forEach(VectorLifecycleManager::detach)
-            newEntries.forEach(VectorLifecycleManager.activeModules::add)
 
             var callbackFailure: Throwable? = null
             for (entry in newEntries) {
