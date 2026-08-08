@@ -16,15 +16,29 @@ import org.lsposed.lspd.util.Utils
 import org.matrix.vector.impl.di.VectorBootstrap
 import org.matrix.vector.nativebridge.HookBridge
 
-/** Builder for configuring and registering hooks. */
+/**
+ * Builder for configuring and registering hooks.
+ *
+ * [frozen] belongs to the module generation that created this builder. Registration is checked both
+ * optimistically and again under the module lock that hot reload takes while retiring a generation,
+ * so an id-less hook cannot slip in after the old generation has been frozen.
+ */
 class VectorHookBuilder(
     private val modulePackageName: String,
     private val origin: Executable,
+    private val frozen: (() -> Boolean)? = null,
     private val defaultExceptionMode: ExceptionMode = ExceptionMode.PROTECTIVE,
 ) : HookBuilder {
 
     constructor(origin: Executable) :
-        this(FRAMEWORK_HOOK_OWNER, origin, ExceptionMode.PROTECTIVE)
+        this(FRAMEWORK_HOOK_OWNER, origin, null, ExceptionMode.PROTECTIVE)
+
+    // Retain the pre-freeze constructor shape for framework-internal/test call sites.
+    constructor(
+        modulePackageName: String,
+        origin: Executable,
+        defaultExceptionMode: ExceptionMode,
+    ) : this(modulePackageName, origin, null, defaultExceptionMode)
 
     private var priority = XposedInterface.PRIORITY_DEFAULT
     private var exceptionMode = ExceptionMode.DEFAULT
@@ -40,35 +54,36 @@ class VectorHookBuilder(
 
     override fun intercept(hooker: Hooker): HookHandle {
         validateHookTarget()
-        if (HookRegistry.isFrozen(modulePackageName, hooker)) {
-            throw IllegalStateException("Module $modulePackageName is frozen for hot reload")
-        }
+        ensureNotFrozen()
 
         val hookKey = id?.let { HookKey(modulePackageName, origin, it) }
         val record = createRecord(hooker)
 
-        if (hookKey != null) {
-            synchronized(HookRegistry) {
-                // Check again while holding the same Java-side registry lock used by replacement.
-                // This closes the window where a hot-reload freeze could retire this hooker after
-                // the optimistic check above but before it becomes visible in the registry.
-                if (HookRegistry.isFrozen(modulePackageName, hooker)) {
-                    throw IllegalStateException("Module $modulePackageName is frozen for hot reload")
-                }
+        // Every module-owned registration, including hooks without setId(), is serialized with the
+        // lock hot reload uses to freeze the generation. Concurrent maps alone are insufficient:
+        // the correctness requirement is ordering between "generation retired" and native install.
+        synchronized(HookRegistry.lockOf(modulePackageName)) {
+            ensureNotFrozen()
 
+            if (hookKey != null) {
                 val existing = HookRegistry.records[hookKey]
                 if (existing != null && existing.isActive()) {
                     return replaceRecordLocked(existing, record, hookKey)
                 }
-
-                installRecord(record)
-                HookRegistry.records[hookKey] = record
-                return VectorHookHandle(record, hookKey)
             }
-        }
 
-        installRecord(record)
-        return VectorHookHandle(record, null)
+            installRecord(record)
+            hookKey?.let { HookRegistry.records[it] = record }
+            return VectorHookHandle(record, hookKey)
+        }
+    }
+
+    private fun ensureNotFrozen() {
+        if (frozen?.invoke() == true) {
+            throw IllegalStateException(
+                "This module generation has been retired by a hot reload and cannot register hooks"
+            )
+        }
     }
 
     private fun createRecord(hooker: Hooker): VectorHookRecord {
@@ -128,49 +143,35 @@ private data class HookKey(
 private object HookRegistry {
     val records = ConcurrentHashMap<HookKey, VectorHookRecord>()
     val allRecords = ConcurrentHashMap.newKeySet<VectorHookRecord>()
-    private val frozenLoaders = ConcurrentHashMap<String, MutableSet<ClassLoader>>()
+    private val locks = ConcurrentHashMap<String, Any>()
 
-    fun freeze(modulePackageName: String, classLoaders: Collection<ClassLoader>) {
-        frozenLoaders[modulePackageName] =
-            ConcurrentHashMap.newKeySet<ClassLoader>().apply { addAll(classLoaders) }
-    }
+    /** One ownership lock per module; hot reload and every registration/handle mutation share it. */
+    fun lockOf(modulePackageName: String): Any =
+        locks.computeIfAbsent(modulePackageName) { Any() }
 
-    fun unfreeze(modulePackageName: String) {
-        frozenLoaders.remove(modulePackageName)
-    }
-
-    fun isFrozen(modulePackageName: String, hooker: Hooker): Boolean {
-        val classLoader = hooker.javaClass.classLoader ?: return false
-        return frozenLoaders[modulePackageName]?.contains(classLoader) == true
-    }
-
-    fun handlesForModule(modulePackageName: String): List<HookHandle> = synchronized(this) {
-        allRecords
-            .filter { it.modulePackageName == modulePackageName && it.isActive() }
-            .map {
-                VectorHookHandle(
-                    it,
-                    it.id?.let { id -> HookKey(modulePackageName, it.executable, id) },
-                )
-            }
-    }
+    fun handlesForModule(modulePackageName: String): List<HookHandle> =
+        synchronized(lockOf(modulePackageName)) {
+            allRecords
+                .filter { it.modulePackageName == modulePackageName && it.isActive() }
+                .map {
+                    VectorHookHandle(
+                        it,
+                        it.id?.let { id -> HookKey(modulePackageName, it.executable, id) },
+                    )
+                }
+        }
 }
 
 internal fun getActiveHookHandles(modulePackageName: String): List<HookHandle> {
     return HookRegistry.handlesForModule(modulePackageName)
 }
 
-internal fun freezeHooks(modulePackageName: String, classLoaders: Collection<ClassLoader>) {
-    HookRegistry.freeze(modulePackageName, classLoaders)
-}
-
-internal fun unfreezeHooks(modulePackageName: String) {
-    HookRegistry.unfreeze(modulePackageName)
-}
+/** The same lock API102 hot reload must hold while freezing a module generation. */
+internal fun hookLockOf(modulePackageName: String): Any = HookRegistry.lockOf(modulePackageName)
 
 internal fun unhookAllModuleHooks(modulePackageName: String, except: Set<HookHandle> = emptySet()) {
     val excludedRecords = except.mapNotNull { (it as? VectorHookHandle)?.record }.toSet()
-    synchronized(HookRegistry) {
+    synchronized(HookRegistry.lockOf(modulePackageName)) {
         HookRegistry.allRecords
             .filter { it.modulePackageName == modulePackageName && it !in excludedRecords }
             .toList()
@@ -185,7 +186,7 @@ private class VectorHookHandle(val record: VectorHookRecord, private val hookKey
     override fun getId(): String? = record.id
 
     override fun unhook() {
-        synchronized(HookRegistry) {
+        synchronized(HookRegistry.lockOf(record.modulePackageName)) {
             uninstallRecordLocked(record)
         }
     }
@@ -201,7 +202,7 @@ private class VectorHookHandle(val record: VectorHookRecord, private val hookKey
                 exceptionMode = record.exceptionMode,
             )
 
-        synchronized(HookRegistry) {
+        synchronized(HookRegistry.lockOf(record.modulePackageName)) {
             if (!record.isActive()) {
                 throw IllegalStateException("Hook handle is no longer valid")
             }
