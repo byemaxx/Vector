@@ -141,11 +141,13 @@ object VectorDaemon {
       "sendToBridge MUST run on the main thread!"
     }
 
-    val ownerState = FileSystem.ensureActiveReinjectionOwner(daemonInstanceId)
-    if (!ownerState.isOwner) {
-      reinjectionLease?.close()
-      terminateStaleDaemon(
-          "Daemon instance `$daemonInstanceId` lost reinjection ownership before bridge injection. Active owner=`${ownerState.owner?.toLogString() ?: "unknown"}`.")
+    if (reinjectionLease != null) {
+      val ownerState = FileSystem.ensureActiveReinjectionOwner(daemonInstanceId)
+      if (!ownerState.isOwner) {
+        reinjectionLease.close()
+        terminateStaleDaemon(
+            "Daemon `$daemonInstanceId` lost reinjection ownership before restart injection. Active owner=`${ownerState.owner?.toLogString() ?: "unknown"}`.")
+      }
     }
 
     Os.seteuid(0)
@@ -156,7 +158,7 @@ object VectorDaemon {
           if (isRestart) {
             Log.w(
                 TAG,
-                "system_server restarted for owner `${ownerState.owner?.toLogString() ?: daemonInstanceId}`" +
+                "system_server restarted for daemon `$daemonInstanceId`" +
                     reinjectionLease?.let { ", round=${it.round}" }.orEmpty())
           }
 
@@ -302,9 +304,7 @@ object VectorDaemon {
   }
 
   private fun terminateStaleDaemon(reason: String): Nothing {
-    ApplicationService.clearHotReloadTargetsForSoftRestart("stale daemon terminating: $reason")
     Log.w(TAG, "$reason Terminating stale daemon instance.")
-    Process.killProcess(Process.myPid())
     kotlin.system.exitProcess(0)
   }
 
