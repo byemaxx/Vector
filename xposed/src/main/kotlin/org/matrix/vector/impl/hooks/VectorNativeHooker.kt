@@ -6,6 +6,7 @@ import io.github.libxposed.api.XposedInterface.HookBuilder
 import io.github.libxposed.api.XposedInterface.HookHandle
 import io.github.libxposed.api.XposedInterface.Hooker
 import io.github.libxposed.api.error.HookFailedError
+import java.lang.reflect.Constructor
 import java.lang.reflect.Executable
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
@@ -79,6 +80,22 @@ class VectorHookBuilder(private val modulePackageName: String, private val origi
                 origin.name == "invoke"
         ) {
             throw IllegalArgumentException("Cannot hook Method.invoke")
+        } else if (
+            origin is Method &&
+                origin.declaringClass == Constructor::class.java &&
+                origin.name == "newInstance"
+        ) {
+            throw IllegalArgumentException(
+                "Constructor.newInstance cannot be hooked: Vector reflects through it the same way it does Method.invoke, so a hook here would recurse."
+            )
+        } else if (
+            origin is Method &&
+                origin.declaringClass == Any::class.java &&
+                origin.name == "getClass"
+        ) {
+            throw IllegalArgumentException(
+                "Object.getClass cannot be hooked: Vector's dispatch calls it entering every hooked method, so a hook here would call itself forever."
+            )
         }
     }
 }
