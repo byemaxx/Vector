@@ -287,9 +287,8 @@ object VectorService : IDaemonService.Stub() {
       Intent.ACTION_PACKAGE_ADDED,
       Intent.ACTION_PACKAGE_CHANGED -> {
         if (isXposedModule && moduleName != null && appInfo != null) {
-          isXposedModule =
-              ModuleDatabase.updateModuleApkPath(
-                  moduleName, ConfigCache.getModuleApkPath(appInfo), false)
+          ModuleDatabase.updateModuleApkPath(
+              moduleName, ConfigCache.getModuleApkPath(appInfo), false)
         } else {
           if (ConfigCache.state.scopes.keys.any { it.uid == uid }) {
             ConfigCache.requestCacheUpdate()

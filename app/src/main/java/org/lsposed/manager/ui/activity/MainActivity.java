@@ -244,6 +244,12 @@ public class MainActivity extends BaseActivity implements RepoLoader.RepoListene
     }
 
     @Override
+    public void onSingleModuleReloaded(ModuleUtil.InstalledModule module) {
+        onRepoLoaded();
+        setModulesSummary(moduleUtil.getEnabledModulesCount());
+    }
+
+    @Override
     public void onModuleUpdateIgnoreChanged(String packageName) {
         onRepoLoaded();
     }
