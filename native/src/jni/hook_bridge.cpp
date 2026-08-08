@@ -1,10 +1,16 @@
 #include <alloca.h>
 #include <parallel_hashmap/phmap.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
+#include <algorithm>
 #include <lsplant.hpp>
+#include <limits>
 #include <memory>
 #include <shared_mutex>
+#include <vector>
 
+#include "core/config_bridge.h"
 #include "jni/jni_bridge.h"
 #include "jni/jni_hooks.h"
 
@@ -84,6 +90,7 @@ SharedHashMap<jmethodID, std::unique_ptr<HookItem>> hooked_methods;
 
 // Cached JNI method and field IDs for performance.
 jmethodID invoke = nullptr;
+
 }  // namespace
 
 namespace vector::native::jni {
@@ -192,6 +199,60 @@ VECTOR_DEF_NATIVE_METHOD(jboolean, HookBridge, unhookMethod, jboolean useModernA
             callbacks.erase(i);
             return JNI_TRUE;
         }
+    }
+
+    return JNI_FALSE;
+}
+
+/**
+ * @brief Swaps one registered callback for another in a single locked step.
+ *
+ * API 102's HookHandle#replaceHook and HookBuilder#setId both promise that a replacement is atomic:
+ * no window in which both the old and the new hooker are on the chain, and none in which neither
+ * is. Doing it as unhook-then-hook from Java can promise neither.
+ *
+ * The lock taken here is the one callbackSnapshot takes, so a snapshot sees exactly one of the two.
+ * A snapshot taken before the swap keeps working afterwards because it copied the reference into a
+ * Java array, which is a strong reference of its own - that is what lets a call already in flight
+ * keep running the old hooker, as the interface requires, without the chain having to freeze a
+ * hooker list of its own on every single hooked call.
+ *
+ * The entry keeps its place among equal priorities when the priority does not change, which is what
+ * replaceHook means by "keeps the priority": re-inserting would move it behind its peers.
+ *
+ * @return JNI_TRUE when oldCallback was found and replaced.
+ */
+VECTOR_DEF_NATIVE_METHOD(jboolean, HookBridge, replaceCallback, jboolean useModernApi,
+                         jobject hookMethod, jobject oldCallback, jobject newCallback,
+                         jint newPriority) {
+    auto target = env->FromReflectedMethod(hookMethod);
+    HookItem *hook_item = nullptr;
+    hooked_methods.if_contains(target,
+                               [&hook_item](const auto &it) { hook_item = it.second.get(); });
+    if (!hook_item) return JNI_FALSE;
+
+    jobject backup = hook_item->GetBackup();
+    if (!backup) return JNI_FALSE;
+
+    lsplant::JNIMonitor monitor(env, backup);
+
+    auto &callbacks = useModernApi ? hook_item->modern_callbacks : hook_item->legacy_callbacks;
+
+    for (auto i = callbacks.begin(); i != callbacks.end(); ++i) {
+        if (!env->IsSameObject(i->second, oldCallback)) continue;
+
+        auto replacement = env->NewGlobalRef(newCallback);
+        // Nothing has been changed yet, so the caller's hook is still whatever it was.
+        if (!replacement) return JNI_FALSE;
+
+        env->DeleteGlobalRef(i->second);
+        if (i->first == newPriority) {
+            i->second = replacement;
+        } else {
+            callbacks.erase(i);
+            callbacks.emplace(newPriority, replacement);
+        }
+        return JNI_TRUE;
     }
 
     return JNI_FALSE;
@@ -500,6 +561,41 @@ VECTOR_DEF_NATIVE_METHOD(jboolean, HookBridge, setTrusted, jobject cookie) {
 }
 
 /**
+ * @brief Clears ACC_FINAL on a field, so that reflection will write it again.
+ *
+ * Android 17 refuses every reflective write to a static final field
+ * (`ThrowIAEIfFieldIsNotOverwritable` in `runtime/native/java_lang_reflect_Field.cc`), whatever
+ * the Field's accessible flag says, and clearing the reflective copy's ACC_FINAL does not help
+ * because the check reads the ArtField. This clears it where the check looks.
+ *
+ * The runtime's own JNI SetStatic*Field is the other way in, and is not taken here: it is
+ * `LOG(FATAL)` for anything ART considers unmodifiable, and the carve-out that would spare
+ * android.os.Build carries a TODO to remove it. A field that is no longer final is unmodifiable
+ * to nobody, so this stays a write and never becomes an abort.
+ *
+ * [modifiers] is what java.lang.reflect.Field reports, and the ArtField's access flags have to
+ * agree with it before anything is written: that is what says this pointer is an ArtField laid
+ * out the way this expects, rather than a JNI index id or a layout that has moved.
+ *
+ * @return JNI_TRUE when the field is no longer final.
+ */
+VECTOR_DEF_NATIVE_METHOD(jboolean, HookBridge, makeFieldWritable, jobject field, jint modifiers) {
+    // jfieldID is the ArtField itself, and `access_flags_` follows the four-byte compressed
+    // `declaring_class_` root that starts it.
+    auto *art_field = reinterpret_cast<uint32_t *>(env->FromReflectedField(field));
+    if (art_field == nullptr) return JNI_FALSE;
+
+    constexpr uint32_t kAccJavaFlagsMask = 0xFFFFu;
+    constexpr uint32_t kAccFinal = 0x0010u;
+
+    uint32_t flags = art_field[1];
+    if ((flags & kAccJavaFlagsMask) != static_cast<uint32_t>(modifiers)) return JNI_FALSE;
+
+    art_field[1] = flags & ~kAccFinal;
+    return JNI_TRUE;
+}
+
+/**
  * @brief Creates a snapshot of all registered callbacks for a given method.
  * This is useful for debugging and introspection from the Java side.
 
@@ -554,23 +650,160 @@ VECTOR_DEF_NATIVE_METHOD(jobjectArray, HookBridge, callbackSnapshot, jclass call
 }
 
 /**
- * @brief  Retrieves the static initializer (<clinit>) of a class as a Method object.
- * @param target_class The class to inspect.
- * @return A Method object for the static initializer, or null if it doesn't exist.
+ * @brief The class name prefixes of the legacy Xposed API as this process will be asked for them.
+ *
+ * API 102 forbids a module that targets it from calling the legacy API, and the only place that can
+ * be enforced is the module class loader - which is handed a name. A literal "de.robv.android.xposed"
+ * is not that name: the daemon rewrites those prefixes in the framework dex and in every module dex
+ * when dex obfuscation is on, so the name a module asks for is a different random string on every
+ * boot. Resolving them through the same map the rest of the framework uses is what makes the guard
+ * hold in both configurations.
+ *
+ * The four entries are the whole legacy surface the obfuscation table covers: the package itself,
+ * AndroidAppHelper, and the XResources / XModuleResources family. Guarding only the package would
+ * leave the legacy resource API reachable.
  */
-VECTOR_DEF_NATIVE_METHOD(jobject, HookBridge, getStaticInitializer, jclass target_class) {
-    // <clinit> is the internal name for a static initializer.
-    // Its signature is always ()V (no arguments, void return).
-    jmethodID mid = env->GetStaticMethodID(target_class, "<clinit>", "()V");
-    if (!mid) {
-        // If GetStaticMethodID fails, it throws an exception.
-        // We clear it and return null to let the Java side handle it gracefully.
-        env->ExceptionClear();
-        return nullptr;
+VECTOR_DEF_NATIVE_METHOD(jobjectArray, HookBridge, legacyApiPrefixes) {
+    // In the dotted form the obfuscation map is served in - the same form loadClass receives.
+    static constexpr const char *kLegacyKeys[] = {
+        "de.robv.android.xposed.",
+        "android.app.AndroidApp",
+        "android.content.res.XRes",
+        "android.content.res.XModule",
+    };
+
+    const auto count = static_cast<jsize>(ArraySize(kLegacyKeys));
+    auto string_class = env->FindClass("java/lang/String");
+    if (!string_class) return nullptr;
+    auto result = env->NewObjectArray(count, string_class, nullptr);
+    env->DeleteLocalRef(string_class);
+    if (!result) return nullptr;
+
+    auto *bridge = ConfigBridge::GetInstance();
+    for (jsize i = 0; i < count; ++i) {
+        std::string name = kLegacyKeys[i];
+        if (bridge) {
+            const auto &map = bridge->obfuscation_map();
+            // Absent means the map never arrived; the unobfuscated name is then the right answer,
+            // because a build with no map is a build with no obfuscation.
+            if (auto it = map.find(name); it != map.end()) name = it->second;
+        }
+        auto value = env->NewStringUTF(name.c_str());
+        env->SetObjectArrayElement(result, i, value);
+        env->DeleteLocalRef(value);
     }
-    // Convert the method ID to a java.lang.reflect.Method object.
-    // The last parameter must be JNI_TRUE because it's a static method.
-    return env->ToReflectedMethod(target_class, mid, JNI_TRUE);
+    return result;
+}
+
+/**
+ * @brief Reports whether the pages spanning [addr, addr + len) are mapped.
+ *
+ * msync on an unmapped range fails with ENOMEM, which turns a read that would raise SIGSEGV into
+ * an answer. Used for the one candidate below that cannot be bracketed by known-good members.
+ */
+static bool IsMapped(uintptr_t addr, size_t len) {
+    static const size_t page = static_cast<size_t>(sysconf(_SC_PAGESIZE));
+    if (page == 0) return false;
+    const uintptr_t start = addr & ~(page - 1);
+    const size_t span = ((addr + len) - start + page - 1) & ~(page - 1);
+    return msync(reinterpret_cast<void *>(start), span, MS_ASYNC) == 0;
+}
+
+/**
+ * @brief Finds a class's static initializer without initializing the class.
+ *
+ * GetStaticMethodID cannot be used: JNI specifies that resolving a method id initializes the
+ * class, which is exactly the event a <clinit> hook exists to observe. Java reflection cannot be
+ * used either, because it hides <clinit> entirely.
+ *
+ * ART stores a class's ArtMethods in one contiguous array: direct methods, then declared virtual
+ * methods, then methods copied in from interfaces. Reflection reports every one of the first two
+ * groups except <clinit>, so the addresses the caller passes are a run of evenly spaced slots with
+ * <clinit> missing from it. Finding the hole finds the method, and a hole is bracketed by two
+ * members that are known to be inside the array, so nothing has to be assumed about where the
+ * array begins.
+ *
+ * The hole is only at the very start - below every address the caller can see - when no declared
+ * direct method sorts ahead of "<clinit>". Dex method ids are ordered by name, and while "<init>"
+ * does sort after it, '$' and '-' do not: an enum's $values, and the -$$Nest$ accessors javac
+ * emits for nestmates, both take the first slot instead. So the slot below the run is one
+ * possibility among several rather than the answer, and it is the only one that can fall outside
+ * the array, which is what a class with no static initializer looks like. It is checked last and
+ * only once its page is known to be mapped.
+ *
+ * Every candidate is then confirmed by two plain word reads before anything dereferences it: its
+ * declaring class must match the run's, and its access flags must say static constructor.
+ *
+ * The caller passes ArtMethod addresses read from java.lang.reflect.Executable.artMethod rather
+ * than jmethodIDs, because a Java-debuggable process hands out index based ids instead of
+ * pointers.
+ *
+ * @return The static initializer as a reflected object, or nullptr if the class has none or the
+ *         layout is not what this relies on.
+ */
+VECTOR_DEF_NATIVE_METHOD(jobject, HookBridge, findStaticInitializer, jclass target_class,
+                         jlongArray art_methods, jlong art_method_size) {
+    const jsize count = art_methods ? env->GetArrayLength(art_methods) : 0;
+    // One member is enough to anchor the run; the element size is a property of the runtime, so
+    // the caller derives it once elsewhere. A class whose only members are <clinit> and an
+    // implicit constructor leaves exactly one member visible to reflection, and that is the
+    // commonest shape for wanting this hook.
+    if (count < 1) return nullptr;
+
+    std::vector<uintptr_t> ids(count);
+    {
+        std::vector<jlong> raw(count);
+        env->GetLongArrayRegion(art_methods, 0, count, raw.data());
+        for (jsize i = 0; i < count; ++i) {
+            auto id = static_cast<uintptr_t>(raw[i]);
+            if (id < 0x1000 || (id % alignof(void *)) != 0) return nullptr;
+            ids[i] = id;
+        }
+    }
+
+    std::sort(ids.begin(), ids.end());
+    const auto stride = static_cast<uintptr_t>(art_method_size);
+    // An ArtMethod is a few dozen bytes on every supported release; refuse rather than guess when
+    // the size is not one a contiguous method array could have.
+    if (stride < 16 || stride > 128 || (stride % alignof(void *)) != 0) return nullptr;
+
+    // Slots the caller cannot see. Interior ones come first because each is bracketed by a member
+    // on either side, so it is inside the array whatever the class turns out to look like. A class
+    // may have more than one hole: reflection also hides members the hidden API policy blocks.
+    constexpr size_t kMaxCandidates = 64;
+    std::vector<uintptr_t> candidates;
+    for (size_t i = 1; i < ids.size(); ++i) {
+        const uintptr_t delta = ids[i] - ids[i - 1];
+        // Uneven spacing means these are not one run of ArtMethods and none of this holds.
+        if (delta == 0 || (delta % stride) != 0) return nullptr;
+        for (uintptr_t slot = ids[i - 1] + stride; slot < ids[i]; slot += stride) {
+            if (candidates.size() >= kMaxCandidates) return nullptr;
+            candidates.push_back(slot);
+        }
+    }
+    // The slot below the run, which may be outside the array altogether.
+    const uintptr_t below = ids.front() - stride;
+    if (IsMapped(below, 2 * sizeof(uint32_t))) candidates.push_back(below);
+
+    // ArtMethod starts with GcRoot<mirror::Class> declaring_class_ followed by uint32_t
+    // access_flags_, so both live in the first eight bytes of a slot.
+    const auto declaring_of = [](uintptr_t m) { return *reinterpret_cast<const uint32_t *>(m); };
+    const auto flags_of = [](uintptr_t m) {
+        return *reinterpret_cast<const uint32_t *>(m + sizeof(uint32_t));
+    };
+
+    constexpr uint32_t kAccStatic = 0x0008;
+    constexpr uint32_t kAccConstructor = 0x00010000;
+    const uint32_t declaring = declaring_of(ids.front());
+
+    for (const uintptr_t candidate : candidates) {
+        if (declaring_of(candidate) != declaring) continue;
+        const uint32_t flags = flags_of(candidate);
+        if ((flags & kAccStatic) == 0 || (flags & kAccConstructor) == 0) continue;
+        return env->ToReflectedMethod(target_class, reinterpret_cast<jmethodID>(candidate),
+                                      JNI_TRUE);
+    }
+    return nullptr;
 }
 
 // Array of native method descriptors for JNI registration.
@@ -580,6 +813,9 @@ static JNINativeMethod gMethods[] = {
                          "lang/Object;)Z"),
     VECTOR_NATIVE_METHOD(HookBridge, unhookMethod,
                          "(ZLjava/lang/reflect/Executable;Ljava/lang/Object;)Z"),
+    VECTOR_NATIVE_METHOD(HookBridge, replaceCallback,
+                         "(ZLjava/lang/reflect/Executable;Ljava/lang/Object;Ljava/"
+                         "lang/Object;I)Z"),
     VECTOR_NATIVE_METHOD(HookBridge, deoptimizeMethod, "(Ljava/lang/reflect/Executable;)Z"),
     VECTOR_NATIVE_METHOD(HookBridge, invokeOriginalMethod,
                          "(Ljava/lang/reflect/Executable;Ljava/lang/Object;[Ljava/"
@@ -590,11 +826,13 @@ static JNINativeMethod gMethods[] = {
     VECTOR_NATIVE_METHOD(HookBridge, allocateObject, "(Ljava/lang/Class;)Ljava/lang/Object;"),
     VECTOR_NATIVE_METHOD(HookBridge, instanceOf, "(Ljava/lang/Object;Ljava/lang/Class;)Z"),
     VECTOR_NATIVE_METHOD(HookBridge, setTrusted, "(Ljava/lang/Object;)Z"),
+    VECTOR_NATIVE_METHOD(HookBridge, makeFieldWritable, "(Ljava/lang/reflect/Field;I)Z"),
     VECTOR_NATIVE_METHOD(HookBridge, callbackSnapshot,
                          "(Ljava/lang/Class;Ljava/lang/reflect/"
                          "Executable;)[[Ljava/lang/Object;"),
-    VECTOR_NATIVE_METHOD(HookBridge, getStaticInitializer,
-                         "(Ljava/lang/Class;)Ljava/lang/reflect/Method;"),
+    VECTOR_NATIVE_METHOD(HookBridge, findStaticInitializer,
+                         "(Ljava/lang/Class;[JJ)Ljava/lang/reflect/Executable;"),
+    VECTOR_NATIVE_METHOD(HookBridge, legacyApiPrefixes, "()[Ljava/lang/String;"),
 };
 
 /**
@@ -606,6 +844,7 @@ void RegisterHookBridge(JNIEnv *env) {
     invoke = env->GetMethodID(method, "invoke",
                               "(Ljava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;");
     env->DeleteLocalRef(method);
+
     REGISTER_VECTOR_NATIVE_METHODS(HookBridge);
 }
 }  // namespace vector::native::jni

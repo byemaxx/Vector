@@ -10,7 +10,6 @@ import android.os.Binder
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
-import android.provider.Telephony
 import android.telephony.TelephonyManager
 import android.util.Log
 import hidden.HiddenApiBridge
@@ -33,10 +32,14 @@ private const val TAG = "VectorService"
 object VectorService : IDaemonService.Stub() {
 
   private var bootCompleted = false
-  @Suppress("DEPRECATION")
+
+  /**
+   * The public pre-Q Telephony.Sms.Intents constant only exists from API 28, while Vector-SR still
+   * supports API 27. Android 8.1 broadcasts the same literal value from its hidden TelephonyIntents.
+   */
   private val ACTION_SECRET_CODE =
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) TelephonyManager.ACTION_SECRET_CODE
-      else Telephony.Sms.Intents.SECRET_CODE_ACTION
+      else "android.provider.Telephony.SECRET_CODE"
 
   override fun dispatchSystemServerContext(
       appThread: IBinder?,
@@ -45,7 +48,6 @@ object VectorService : IDaemonService.Stub() {
     appThread?.let { SystemContext.appThread = IApplicationThread.Stub.asInterface(it) }
     SystemContext.token = activityToken
 
-    // Initialize OS Observers using Coroutines for the dispatch blocks
     registerReceivers()
 
     if (VectorDaemon.isLateInject) {
@@ -102,7 +104,6 @@ object VectorService : IDaemonService.Stub() {
             }
           }
 
-          // Critical for ordered broadcasts to avoid freezing the system queue
           if (!ordered && intent.action != Intent.ACTION_LOCKED_BOOT_COMPLETED) return
           runCatching {
                 val appThread = SystemContext.appThread
@@ -153,15 +154,12 @@ object VectorService : IDaemonService.Stub() {
           addDataAuthority("5776733", null)
         }
 
-    // Define strict Android 14+ flags and the system-only BRICK permission
     val notExported = Context.RECEIVER_NOT_EXPORTED
     val exported = Context.RECEIVER_EXPORTED
-    val brickPerm = "android.permission.BRICK" // Restrict senders to Android system only
+    val brickPerm = "android.permission.BRICK"
 
-    // userId = 0 => USER_SYSTEM
     activityManager?.registerReceiverCompat(
         createReceiver(), configFilter, brickPerm, 0, notExported)
-    // userId = -1 => USER_ALL
     activityManager?.registerReceiverCompat(
         createReceiver(), packageFilter, brickPerm, -1, notExported)
     activityManager?.registerReceiverCompat(createReceiver(), uidFilter, brickPerm, -1, notExported)
@@ -174,7 +172,6 @@ object VectorService : IDaemonService.Stub() {
     activityManager?.registerReceiverCompat(
         createReceiver(), scopeFilter, brickPerm, 0, notExported)
 
-    // Only the secret dialer code needs to be exported so the phone app can trigger it
     activityManager?.registerReceiverCompat(
         createReceiver(),
         secretCodeFilter,
@@ -182,7 +179,6 @@ object VectorService : IDaemonService.Stub() {
         0,
         exported)
 
-    // UID Observer
     val uidObserver =
         object : android.app.IUidObserver.Stub() {
           override fun onUidActive(uid: Int) = ModuleService.uidStarts(uid)
@@ -194,6 +190,21 @@ object VectorService : IDaemonService.Stub() {
           override fun onUidIdle(uid: Int, disabled: Boolean) = ModuleService.uidStarts(uid)
 
           override fun onUidGone(uid: Int, disabled: Boolean) = ModuleService.uidGone(uid)
+
+          // The mask below does not request these callbacks, but the platform Stub declares them
+          // on supported releases. Leaving one abstract can become fatal if an OEM widens dispatch.
+          override fun onUidStateChanged(uid: Int, procState: Int, procStateSeq: Long) {}
+
+          override fun onUidStateChanged(
+              uid: Int,
+              procState: Int,
+              procStateSeq: Long,
+              capability: Int
+          ) {}
+
+          override fun onUidProcAdjChanged(uid: Int) {}
+
+          override fun onUidProcAdjChanged(uid: Int, adj: Int) {}
         }
 
     val which =
@@ -258,13 +269,17 @@ object VectorService : IDaemonService.Stub() {
     when (action) {
       Intent.ACTION_PACKAGE_FULLY_REMOVED -> {
         if (moduleName != null) {
-          // When a package is gone, we can't check metadata.
-          // If it's gone for everyone, wipe the package from all users in the DB.
-          // Otherwise, only wipe it for the user that just uninstalled it.
+          // A device-wide removal must not leave another user's remote preferences behind to be
+          // resurrected on reinstall. A profile-only uninstall deletes only that profile's rows.
           val targetUser = if (isRemovedForAllUsers) null else userId
-          PreferenceStore.deleteModulePrefs(moduleName, userId, group = null)
+          PreferenceStore.deleteModulePrefs(moduleName, targetUser, group = null)
+
+          // "Never ask again" is framework-owned state stored under lspd, not under the module's
+          // own preference rows, so deleting the module preferences cannot clear it. A full
+          // uninstall is the user's explicit reset point; a per-user uninstall is not.
+          if (isRemovedForAllUsers) unblockScopeRequests(moduleName)
+
           if (isRemovedForAllUsers && ModuleDatabase.removeModule(moduleName)) {
-            // If it was in our DB and we successfully removed it, we treat it as an Xposed module.
             isXposedModule = true
           }
         }
@@ -272,30 +287,24 @@ object VectorService : IDaemonService.Stub() {
       Intent.ACTION_PACKAGE_ADDED,
       Intent.ACTION_PACKAGE_CHANGED -> {
         if (isXposedModule && moduleName != null && appInfo != null) {
-          // Update the database with the new APK path if it's an Xposed module
           isXposedModule =
               ModuleDatabase.updateModuleApkPath(
                   moduleName, ConfigCache.getModuleApkPath(appInfo), false)
         } else {
           if (ConfigCache.state.scopes.keys.any { it.uid == uid }) {
-            // If not a module, but it's an app that was previously a "scope" (target)
-            // for a module, we need to refresh the cache.
             ConfigCache.requestCacheUpdate()
           }
 
           if (action == Intent.ACTION_PACKAGE_ADDED &&
               !intent.getBooleanExtra(Intent.EXTRA_REPLACING, false) &&
               moduleName != null) {
-
             ConfigCache.getAutoIncludeModules().forEach { xposedModule ->
               val scopeList = ConfigCache.getModuleScope(xposedModule) ?: mutableListOf()
-
               val newScope =
                   Application().apply {
                     this.packageName = moduleName
                     this.userId = userId
                   }
-
               scopeList.add(newScope)
               if (!ModuleDatabase.setModuleScope(xposedModule, scopeList)) {
                 Log.e(TAG, "Failed to auto-include $moduleName for $xposedModule")
@@ -305,14 +314,12 @@ object VectorService : IDaemonService.Stub() {
         }
       }
       Intent.ACTION_UID_REMOVED -> {
-        // If the UID being removed was a module or a scoped app, refresh the cache.
         if (isXposedModule || ConfigCache.state.scopes.keys.any { it.uid == uid }) {
           ConfigCache.requestCacheUpdate()
         }
       }
     }
 
-    // Special handling if the app being changed is the Vector Manager itself.
     val isRemovedAction =
         action == Intent.ACTION_PACKAGE_FULLY_REMOVED || action == Intent.ACTION_UID_REMOVED
     if (moduleName == BuildConfig.DEFAULT_MANAGER_PACKAGE_NAME && userId == 0) {
@@ -320,7 +327,6 @@ object VectorService : IDaemonService.Stub() {
       ConfigCache.updateManager(isRemovedAction)
     }
 
-    // Notify the manager (foreground) that a package state changed so it can refresh its view.
     if (moduleName != null) {
       val notifyIntent =
           Intent(ACTION_MANAGER_NOTIFICATION).apply {
@@ -331,29 +337,30 @@ object VectorService : IDaemonService.Stub() {
             addFlags(FLAG_RECEIVER_INCLUDE_BACKGROUND or FLAG_RECEIVER_FROM_SHELL)
           }
 
-      // Send to both the parasitic manager and the standalone manager
       listOf(BuildConfig.MANAGER_INJECTED_PKG_NAME, BuildConfig.DEFAULT_MANAGER_PACKAGE_NAME)
           .forEach { pkg ->
             activityManager?.broadcastIntentCompat(Intent(notifyIntent).setPackage(pkg))
           }
     }
 
-    // If an actual Xposed module was updated (not removed), show a system notification.
     if (moduleName != null && isXposedModule && !isRemovedAction && !isRemovedForAllUsers) {
       val scopes = ConfigCache.getModuleScope(moduleName) ?: emptyList()
       val isSystemModule = scopes.any { it.packageName == "system" }
       val isEnabled = ManagerService.enabledModules().contains(moduleName)
-
       NotificationManager.notifyModuleUpdated(moduleName, userId, isEnabled, isSystemModule)
     }
   }
 
+  /**
+   * Completes one whole requestScope call. Adapted from JingMatrix/Vector@4fcea0e while keeping the
+   * old Vector-SR receiver/IPC namespace. Approval is persisted even when the requesting module
+   * process died while the prompt was open; callback delivery is best-effort after the state change.
+   */
   @Suppress("UNCHECKED_CAST")
   private fun dispatchModuleScope(intent: Intent) {
     val data = intent.data ?: return
     val extras = intent.extras ?: return
     val callbackBinder = extras.getBinder("callback") ?: return
-    if (!callbackBinder.isBinderAlive) return
 
     val authority = data.encodedAuthority ?: return
     val parts = authority.split(":", limit = 2)
@@ -361,44 +368,124 @@ object VectorService : IDaemonService.Stub() {
     val packageName = parts[0]
     val userId = parts[1].toIntOrNull() ?: return
 
-    val scopePackageName = data.path?.substring(1) ?: return // remove leading '/'
+    val scopePackageNames =
+        data.path?.substring(1)?.split(",")?.filter { it.isNotEmpty() } ?: return
     val action = data.getQueryParameter("action") ?: return
 
-    val iCallback = IXposedScopeCallback.Stub.asInterface(callbackBinder)
+    // Buttons, swipe and timeout may race. Exactly the first delivery owns the answer.
+    if (!NotificationManager.claimScopeAnswer(packageName, userId, scopePackageNames)) return
+
+    val callback = IXposedScopeCallback.Stub.asInterface(callbackBinder)
     runCatching {
-          val appInfo = packageManager?.getPackageInfoCompat(scopePackageName, 0, userId)
-          if (appInfo == null) {
-            iCallback.onScopeRequestFailed("Package not found")
-            return
-          }
           when (action) {
             "approve" -> {
-              val scopes = ConfigCache.getModuleScope(packageName) ?: mutableListOf()
-              if (scopes.none { it.packageName == scopePackageName && it.userId == userId }) {
-                scopes.add(
-                    Application().apply {
-                      this.packageName = scopePackageName
-                      this.userId = userId
-                    })
-                ModuleDatabase.setModuleScope(packageName, scopes)
+              // "system" names framework/system_server scope rather than a package and therefore
+              // must not be resolved through PackageManager. Ordinary packages are resolved only
+              // at approval time; an uninstalled member simply drops out of the granted subset.
+              val granted =
+                  scopePackageNames.filter { scopePkg ->
+                    scopePkg == "system" ||
+                        packageManager?.getPackageInfoCompat(scopePkg, 0, userId) != null
+                  }
+              if (granted.isEmpty()) {
+                Log.w(TAG, "No requested scope is still grantable for $packageName")
+                runCatching {
+                  callback.onScopeRequestFailed("Requested packages are no longer available")
+                }
+                return@runCatching
               }
-              iCallback.onScopeRequestApproved(listOf(scopePackageName))
+
+              val scopes = ConfigCache.getModuleScope(packageName) ?: mutableListOf()
+              var changed = false
+              granted.forEach { scopePkg ->
+                val storedUserId = if (scopePkg == "system") 0 else userId
+                if (scopes.none { it.packageName == scopePkg && it.userId == storedUserId }) {
+                  scopes.add(
+                      Application().apply {
+                        this.packageName = scopePkg
+                        this.userId = storedUserId
+                      })
+                  changed = true
+                }
+              }
+
+              if (changed && !ModuleDatabase.setModuleScope(packageName, scopes)) {
+                Log.w(TAG, "Scope approval for $packageName was rejected by daemon policy")
+                runCatching {
+                  callback.onScopeRequestFailed("Scope changed before approval completed")
+                }
+                return@runCatching
+              }
+
+              runCatching { callback.onScopeRequestApproved(granted) }
+                  .onFailure {
+                    Log.w(TAG, "Scope was stored but callback delivery failed for $packageName", it)
+                  }
             }
-            "deny" -> iCallback.onScopeRequestFailed("Request denied by user")
-            "delete" -> iCallback.onScopeRequestFailed("Request timeout")
+            "deny" ->
+                runCatching { callback.onScopeRequestFailed("Request denied by user") }
+                    .onFailure { Log.w(TAG, "Could not report scope denial for $packageName", it) }
+            "delete" ->
+                runCatching { callback.onScopeRequestFailed("Request timeout") }
+                    .onFailure { Log.w(TAG, "Could not report scope timeout for $packageName", it) }
             "block" -> {
-              val blocked =
-                  PreferenceStore.getModulePrefs("lspd", 0, "config")["scope_request_blocked"]
-                      as? Set<String> ?: emptySet()
-              PreferenceStore.updateModulePref(
-                  "lspd", 0, "config", "scope_request_blocked", blocked + packageName)
-              iCallback.onScopeRequestFailed("Request blocked by configuration")
+              blockScopeRequests(packageName)
+
+              // "Never ask again" applies to every unanswered question from the module, not merely
+              // the prompt whose button was pressed.
+              val otherCallbacks = NotificationManager.withdrawScopeRequests(packageName)
+              otherCallbacks.forEach { pending ->
+                runCatching {
+                      pending.onScopeRequestFailed("Scope request blocked by user configuration")
+                    }
+                    .onFailure {
+                      Log.w(TAG, "Could not report withdrawn scope request for $packageName", it)
+                    }
+              }
+              runCatching {
+                    callback.onScopeRequestFailed("Scope request blocked by user configuration")
+                  }
+                  .onFailure { Log.w(TAG, "Could not report scope block for $packageName", it) }
             }
+            else -> Log.w(TAG, "Unknown scope request action: $action")
           }
         }
-        .onFailure { runCatching { iCallback.onScopeRequestFailed(it.message) } }
+        .onFailure {
+          Log.e(TAG, "Failed to process scope request for $packageName", it)
+          // IXposedScopeCallback declares a non-null failure message; Throwable.message does not.
+          runCatching { callback.onScopeRequestFailed(it.message ?: it.toString()) }
+        }
 
-    NotificationManager.cancelNotification(
-        NotificationManager.SCOPE_CHANNEL_ID, packageName, userId)
+    NotificationManager.cancelScopeRequest(packageName, userId, scopePackageNames)
+  }
+
+  /** Framework-owned list of modules the user told us never to ask scope for again. */
+  @Suppress("UNCHECKED_CAST")
+  private fun blockedScopeRequests(): Set<String> =
+      PreferenceStore.getModulePrefs("lspd", 0, "config")["scope_request_blocked"] as? Set<String>
+          ?: emptySet()
+
+  private fun blockScopeRequests(packageName: String) {
+    PreferenceStore.updateModulePref(
+        "lspd",
+        0,
+        "config",
+        "scope_request_blocked",
+        blockedScopeRequests() + packageName,
+    )
+  }
+
+  /** A full uninstall resets the persistent "never ask again" decision for a future reinstall. */
+  private fun unblockScopeRequests(packageName: String) {
+    val blocked = blockedScopeRequests()
+    if (packageName !in blocked) return
+    PreferenceStore.updateModulePref(
+        "lspd",
+        0,
+        "config",
+        "scope_request_blocked",
+        blocked - packageName,
+    )
+    Log.i(TAG, "$packageName was fully uninstalled; scope requests are no longer blocked")
   }
 }

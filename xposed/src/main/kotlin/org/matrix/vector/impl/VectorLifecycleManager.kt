@@ -19,6 +19,9 @@ object VectorLifecycleManager {
         activeModules.remove(module)
     }
 
+    /** API102 detach is per entry; hot reload must not call a detached sibling again. */
+    fun isActive(module: XposedModule): Boolean = activeModules.contains(module)
+
     fun dispatchPackageLoaded(
         packageName: String,
         appInfo: ApplicationInfo,
@@ -54,7 +57,7 @@ object VectorLifecycleManager {
         isFirst: Boolean,
         defaultClassLoader: ClassLoader,
         classLoader: ClassLoader,
-        appComponentFactory: Any?, // Abstracted for API compatibility
+        appComponentFactory: Any?,
     ) {
         val param =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && appComponentFactory != null) {
@@ -67,7 +70,6 @@ object VectorLifecycleManager {
                     appComponentFactory,
                 )
             } else {
-                // Fallback for API < 28 (or if factory is null).
                 object : PackageReadyParam {
                     override fun getPackageName() = packageName
 
@@ -121,7 +123,6 @@ object VectorLifecycleManager {
     }
 }
 
-// Isolate the class so the Verifier doesn't crash on Android 8.1 and below
 @RequiresApi(Build.VERSION_CODES.P)
 private class PackageReadyParamImplP(
     private val packageName: String,

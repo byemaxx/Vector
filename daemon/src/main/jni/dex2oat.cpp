@@ -200,6 +200,12 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_org_matrix_vector_daemon_env_Dex2OatServer_setSockCreateContext(JNIEnv *env, jclass,
                                                                      jstring contextStr) {
     const char *context = contextStr ? env->GetStringUTFChars(contextStr, nullptr) : nullptr;
+    if (contextStr && !context) {
+        // Only OutOfMemoryError puts us here, and it is pending. Returning to Java with the
+        // exception still set would make it surface at a later, unrelated JNI call.
+        env->ExceptionClear();
+        return JNI_FALSE;
+    }
     int ret = setsockcreatecon_raw(context);
     if (context) env->ReleaseStringUTFChars(contextStr, context);
     return ret == 0;

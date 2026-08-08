@@ -107,10 +107,14 @@ object VectorDaemon {
 
     applyNotificationWorkaround()
 
+    // Read before sendToBridge(), which leaves the daemon main thread at euid 1000. If the first
+    // injection fails, the config database must already have been opened/cached while root remains.
+    val isVerboseLog = ManagerService.isVerboseLog()
+
     // Setup IPC channel for applications by injecting DaemonService binder
     sendToBridge(VectorService.asBinder(), false, systemServerMaxRetry)
 
-    if (!ManagerService.isVerboseLog()) {
+    if (!isVerboseLog) {
       LogcatMonitor.stopVerbose()
     }
 

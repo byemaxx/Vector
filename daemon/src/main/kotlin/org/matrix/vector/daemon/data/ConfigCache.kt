@@ -1,7 +1,9 @@
 package org.matrix.vector.daemon.data
 
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageInfo
 import android.content.pm.PackageParser
+import android.os.Build
 import android.system.Os
 import android.util.Log
 import hidden.HiddenApiBridge
@@ -24,6 +26,12 @@ import org.matrix.vector.daemon.utils.getRealUsers
 
 private const val TAG = "VectorConfigCache"
 
+/** PackageInfo.getLongVersionCode() was added in API 28; Vector-SR still supports API 27. */
+@Suppress("DEPRECATION")
+private val PackageInfo.versionCodeCompat: Long
+  get() =
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) longVersionCode else versionCode.toLong()
+
 data class ModuleCodeIdentity(
     val packageName: String,
     val versionCode: Long,
@@ -41,6 +49,12 @@ object ConfigCache {
     private set
 
   val dbHelper = Database() // Kept public for PreferenceStore and ModuleDatabase
+
+  // Module package -> packages it claims when module.prop fixes the scope. Absent means unrestricted.
+  // Adapted from JingMatrix/Vector@04093fd and kept daemon-side so every write path is constrained.
+  @Volatile private var staticScopes: Map<String, Set<String>> = emptyMap()
+
+  fun staticScopeOf(modulePackage: String): Set<String>? = staticScopes[modulePackage]
 
   private val cacheUpdateChannel = Channel<Unit>(Channel.CONFLATED)
 
@@ -124,9 +138,15 @@ object ConfigCache {
     cacheUpdateChannel.trySend(Unit)
   }
 
-  /** Builds a completely new Immutable State and atomically swaps it. */
+  /** Builds a completely new immutable state and atomically swaps it. */
   private fun performCacheUpdate() {
     if (packageManager == null) return
+
+    val users = userManager?.getRealUsers() ?: emptyList()
+    if (users.isEmpty()) {
+      Log.w(TAG, "No users available; skipping cache rebuild rather than assuming nothing exists")
+      return
+    }
 
     Log.d(TAG, "Executing Cache Update...")
     val db = dbHelper.readableDatabase
@@ -134,6 +154,8 @@ object ConfigCache {
 
     val newModules = mutableMapOf<String, Module>()
     val newModuleIdentities = mutableMapOf<String, ModuleCodeIdentity>()
+    val newStaticScopes = mutableMapOf<String, Set<String>>()
+    val moduleUsers = mutableMapOf<String, Set<Int>>()
     val obsoleteModules = mutableSetOf<String>()
     val obsoletePaths = mutableMapOf<String, String>()
     val nextGeneration = oldState.configGeneration + 1
@@ -154,12 +176,19 @@ object ConfigCache {
 
             val oldModule = oldState.modules[pkgName]
 
-            var pkgInfo: android.content.pm.PackageInfo? = null
-            val users = userManager?.getRealUsers() ?: emptyList()
-            for (user in users) {
-              pkgInfo = packageManager?.getPackageInfoCompat(pkgName, MATCH_ALL_FLAGS, user.id)
-              if (pkgInfo?.applicationInfo != null) break
+            // MATCH_ANY_USER may return metadata for users that do not hold the package. Track the
+            // actual holders separately and prefer a holder's ApplicationInfo.
+            var pkgInfo: PackageInfo? = null
+            var anyPkgInfo: PackageInfo? = null
+            for (user in users.sortedBy { it.id }) {
+              val info = packageManager?.getPackageInfoCompat(pkgName, MATCH_ALL_FLAGS, user.id)
+              if (info?.applicationInfo == null) continue
+              if (anyPkgInfo == null) anyPkgInfo = info
+              if (packageManager?.isPackageAvailable(pkgName, user.id, true) != true) continue
+              moduleUsers[pkgName] = moduleUsers[pkgName].orEmpty() + user.id
+              if (pkgInfo == null) pkgInfo = info
             }
+            if (pkgInfo == null) pkgInfo = anyPkgInfo
 
             if (pkgInfo?.applicationInfo == null) {
               Log.w(TAG, "Failed to find package info of $pkgName")
@@ -178,12 +207,16 @@ object ConfigCache {
                 File(appInfo.sourceDir).parent == File(apkPath).parent) {
 
               val currentIdentity =
-                  buildModuleCodeIdentity(pkgName, pkgInfo.longVersionCode, apkPath)
+                  buildModuleCodeIdentity(pkgName, pkgInfo.versionCodeCompat, apkPath)
               val oldIdentity = moduleCodeIdentities[pkgName]
               if (currentIdentity == oldIdentity) {
-                if (oldModule.appId == -1) oldModule.applicationInfo = appInfo
+                // appId is device-wide. A secondary user's full uid breaks module self-identity.
+                oldModule.appId = appInfo.uid % PER_USER_RANGE
+                oldModule.applicationInfo = appInfo
                 newModules[pkgName] = oldModule
                 newModuleIdentities[pkgName] = currentIdentity
+                val claimed = staticScopes[pkgName] ?: StaticScopeReader.read(apkPath)
+                if (claimed != null) newStaticScopes[pkgName] = claimed
                 continue
               }
             }
@@ -198,14 +231,16 @@ object ConfigCache {
               obsoletePaths[pkgName] = realApkPath
             }
 
+            StaticScopeReader.read(apkPath)?.let { newStaticScopes[pkgName] = it }
+
             val preLoadedApk = FileSystem.loadModule(apkPath, state.isDexObfuscateEnabled)
             if (preLoadedApk != null) {
               val module =
                   Module().apply {
                     packageName = pkgName
                     this.apkPath = apkPath
-                    appId = appInfo.uid
-                    versionCode = pkgInfo.longVersionCode
+                    appId = appInfo.uid % PER_USER_RANGE
+                    versionCode = pkgInfo.versionCodeCompat
                     applicationInfo = appInfo
                     service = oldModule?.service ?: InjectedModuleService(pkgName)
                     file = preLoadedApk
@@ -225,7 +260,21 @@ object ConfigCache {
       obsoletePaths.forEach { (pkg, path) -> ModuleDatabase.updateModuleApkPath(pkg, path, true) }
     }
 
+    // Historical rows may predate a module declaring staticScope. Prune them before expansion.
+    newStaticScopes.forEach { (modulePkg, claimed) ->
+      val dropped = ModuleDatabase.pruneScopeToClaimed(modulePkg, claimed)
+      if (dropped > 0) {
+        Log.i(TAG, "Dropped $dropped app(s) outside the static scope of $modulePkg")
+      }
+    }
+
     val newScopes = mutableMapOf<ProcessScope, MutableList<Module>>()
+
+    fun addToScope(processName: String, uid: Int, module: Module) {
+      val modules = newScopes.getOrPut(ProcessScope(processName, uid)) { mutableListOf() }
+      if (modules.none { it === module }) modules.add(module)
+    }
+
     db.query(
             "scope INNER JOIN modules ON scope.mid = modules.mid",
             arrayOf("app_pkg_name", "module_pkg_name", "user_id"),
@@ -241,55 +290,50 @@ object ConfigCache {
             val userId = cursor.getInt(2)
 
             val module = newModules[modPkg] ?: continue
+            val holders = moduleUsers[modPkg].orEmpty()
+
+            // Defence in depth: stale or externally restored rows cannot bypass staticScope.
+            if (newStaticScopes[modPkg]?.contains(appPkg) == false) continue
 
             if (appPkg == "system") {
-              newScopes
-                  .getOrPut(ProcessScope("system_server", 1000)) { mutableListOf() }
-                  .add(module)
+              if (holders.isNotEmpty()) addToScope("system_server", 1000, module)
               continue
             }
 
-            val pkgInfo =
-                packageManager?.getPackageInfoWithComponents(appPkg, MATCH_ALL_FLAGS, userId)
-            if (pkgInfo?.applicationInfo == null) continue
+            // API102 multi-user ownership: never execute a module in a user that does not hold it.
+            if (userId !in holders) continue
 
-            val processNames = pkgInfo.fetchProcesses()
+            val targetPkgInfo =
+                packageManager?.getPackageInfoWithComponents(appPkg, MATCH_ALL_FLAGS, userId)
+            if (targetPkgInfo?.applicationInfo == null) continue
+
+            val processNames = targetPkgInfo.fetchProcesses()
             if (processNames.isEmpty()) continue
 
-            val appUid = pkgInfo.applicationInfo!!.uid
+            val appUid = targetPkgInfo.applicationInfo!!.uid
 
             for (processName in processNames) {
-              val processScope = ProcessScope(processName, appUid)
-              newScopes.getOrPut(processScope) { mutableListOf() }.add(module)
+              addToScope(processName, appUid, module)
 
               if (modPkg == appPkg) {
                 val appId = appUid % PER_USER_RANGE
-                userManager?.getRealUsers()?.forEach { user ->
-                  val moduleUid = user.id * PER_USER_RANGE + appId
-                  if (moduleUid != appUid) {
-                    val moduleSelf = ProcessScope(processName, moduleUid)
-                    newScopes.getOrPut(moduleSelf) { mutableListOf() }.add(module)
-                  }
+                holders.forEach { holder ->
+                  val moduleUid = holder * PER_USER_RANGE + appId
+                  if (moduleUid != appUid) addToScope(processName, moduleUid, module)
                 }
               }
             }
           }
         }
 
-    // --- ATOMIC STATE SWAP ---
-    state =
-        oldState.copy(modules = newModules, scopes = newScopes, configGeneration = nextGeneration)
-    moduleCodeIdentities = newModuleIdentities
+    synchronized(this) {
+      state =
+          state.copy(modules = newModules, scopes = newScopes, configGeneration = nextGeneration)
+      moduleCodeIdentities = newModuleIdentities
+      staticScopes = newStaticScopes
+    }
 
     Log.d(TAG, "Cache Update Complete. Map Swap successful.")
-    // Log.d(TAG, "cached modules:")
-    // newModules.forEach { (pkg, mod) -> Log.d(TAG, "$pkg ${mod.apkPath}") }
-
-    // Log.d(TAG, "cached scopes:")
-    // newScopes.forEach { (ps, modules) ->
-    //   Log.d(TAG, "${ps.processName}/${ps.uid}")
-    //   modules.forEach { mod -> Log.d(TAG, "\t${mod.packageName}") }
-    // }
   }
 
   fun getModuleScope(packageName: String): MutableList<Application>? {
@@ -339,7 +383,7 @@ object ConfigCache {
 
   fun getAutoIncludeModules(): List<String> {
     val result = mutableListOf<String>()
-    ConfigCache.dbHelper.readableDatabase
+    dbHelper.readableDatabase
         .query("modules", arrayOf("module_pkg_name"), "auto_include = 1", null, null, null, null)
         .use { cursor ->
           val idx = cursor.getColumnIndexOrThrow("module_pkg_name")
@@ -368,6 +412,15 @@ object ConfigCache {
   fun getModuleCodeIdentity(packageName: String): ModuleCodeIdentity? =
       moduleCodeIdentities[packageName]
 
+  /** Finds a device-protected module data directory without assuming the module exists in user 0. */
+  private fun resolveModuleDataDir(pkgName: String): String? {
+    val userDirs = FileSystem.toGlobalNamespace("/data/user_de").listFiles() ?: return null
+    return userDirs
+        .sortedBy { it.name.toIntOrNull() ?: Int.MAX_VALUE }
+        .map { FileSystem.toGlobalNamespace("/data/user_de/${it.name}/$pkgName").absolutePath }
+        .firstOrNull { runCatching { Os.stat(it) }.isSuccess }
+  }
+
   fun getModulesForSystemServer(): List<Module> {
     val modules = mutableListOf<Module>()
     if (!android.os.SELinux.checkSELinuxAccess(
@@ -390,7 +443,10 @@ object ConfigCache {
         .use { cursor ->
           while (cursor.moveToNext()) {
             val pkgName = cursor.getString(0)
-            val apkPath = cursor.getString(1)
+            val apkPath = cursor.getString(1) ?: continue
+
+            val claimed = staticScopes[pkgName] ?: StaticScopeReader.read(apkPath)
+            if (claimed != null && "system" !in claimed) continue
 
             val cached = currentState.modules[pkgName]
             if (cached != null) {
@@ -398,12 +454,14 @@ object ConfigCache {
               continue
             }
 
-            val statPath = FileSystem.toGlobalNamespace("/data/user_de/0/$pkgName").absolutePath
+            val statPath =
+                resolveModuleDataDir(pkgName)
+                    ?: FileSystem.toGlobalNamespace("/data/user_de/0/$pkgName").absolutePath
             val module =
                 Module().apply {
                   packageName = pkgName
                   this.apkPath = apkPath
-                  appId = runCatching { Os.stat(statPath).st_uid }.getOrDefault(-1)
+                  appId = runCatching { Os.stat(statPath).st_uid % PER_USER_RANGE }.getOrDefault(-1)
                   versionCode = 0L
                   service = InjectedModuleService(pkgName)
                 }
@@ -418,7 +476,6 @@ object ConfigCache {
                   module.applicationInfo = ApplicationInfo().apply { packageName = pkgName }
                 }
 
-            // Always apply the critical paths manually, even on fallback
             module.applicationInfo?.apply {
               sourceDir = apkPath
               dataDir = statPath
@@ -454,7 +511,11 @@ object ConfigCache {
     }
   }
 
-  private fun buildModuleCodeIdentity(packageName: String, versionCode: Long, apkPath: String?): ModuleCodeIdentity {
+  private fun buildModuleCodeIdentity(
+      packageName: String,
+      versionCode: Long,
+      apkPath: String?
+  ): ModuleCodeIdentity {
     val file = apkPath?.let { FileSystem.toGlobalNamespace(it) }
     return ModuleCodeIdentity(
         packageName = packageName,
@@ -489,7 +550,6 @@ object ConfigCache {
     val module = state.modules[packageName]
     if (module != null && module.appId == uid % PER_USER_RANGE) {
       runCatching {
-            // Ensure the directory exists first
             if (!Files.exists(path)) {
               Files.createDirectories(path)
             }
@@ -497,17 +557,13 @@ object ConfigCache {
             Files.walk(path).use { stream ->
               stream.forEach { p ->
                 val pathStr = p.toString()
-
-                // Change Owner
                 Os.chown(pathStr, uid, uid)
 
-                // Set Permissions using Octal
-                // Root folder must be word-readable for monitoring
                 val mode =
                     when {
-                      p == path -> "755".toInt(8) // Root folder: 755
-                      Files.isDirectory(p) -> "711".toInt(8) // Sub-folders: 711
-                      else -> "744".toInt(8) // Files: 744
+                      p == path -> "755".toInt(8)
+                      Files.isDirectory(p) -> "711".toInt(8)
+                      else -> "744".toInt(8)
                     }
 
                 Os.chmod(pathStr, mode)

@@ -2,7 +2,6 @@ package org.matrix.vector.daemon.system
 
 import android.app.Notification
 import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -71,22 +70,19 @@ object NotificationManager {
     var res = r.getDrawable(id, r.newTheme())
     if (res is BitmapDrawable) {
       return res.bitmap
-    } else {
-      if (res is AdaptiveIconDrawable) {
-        res = LayerDrawable(arrayOf(res.background, res.foreground))
-      }
-      val bitmap =
-          Bitmap.createBitmap(res.intrinsicWidth, res.intrinsicHeight, Bitmap.Config.ARGB_8888)
-      val canvas = Canvas(bitmap)
-      res.setBounds(0, 0, canvas.width, canvas.height)
-      res.draw(canvas)
-      return bitmap
     }
+    if (res is AdaptiveIconDrawable) {
+      res = LayerDrawable(arrayOf(res.background, res.foreground))
+    }
+    val bitmap =
+        Bitmap.createBitmap(res.intrinsicWidth, res.intrinsicHeight, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    res.setBounds(0, 0, canvas.width, canvas.height)
+    res.draw(canvas)
+    return bitmap
   }
 
-  private fun getNotificationIcon(): Icon {
-    return Icon.createWithBitmap(getBitmap(R.drawable.ic_notification))
-  }
+  private fun getNotificationIcon(): Icon = Icon.createWithBitmap(getBitmap(R.drawable.ic_notification))
 
   fun notifyStatusNotification() {
     val context = FakeContext()
@@ -122,12 +118,10 @@ object NotificationManager {
     }
   }
 
+  /** Retained for the old View-based Manager's non-scope notifications. */
   fun cancelNotification(channel: String, modulePkg: String, moduleUserId: Int) {
     runCatching {
-          // We use the module package name's hash code as the notification ID
-          // to match how we enqueued it in requestModuleScope and notifyModuleUpdated.
           val notifId = modulePkg.hashCode()
-
           if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             nm?.cancelNotificationWithTag("android", "android", modulePkg, notifId, 0)
           } else {
@@ -137,16 +131,91 @@ object NotificationManager {
         .onFailure { Log.e(TAG, "Failed to cancel notification", it) }
   }
 
+  /**
+   * One scope request is identified by module, user and the canonical requested package set.
+   * Adapted from JingMatrix/Vector@4fcea0e so different requests from one module no longer replace
+   * one another merely because they share the same notification tag/id.
+   */
+  private fun scopeTag(modulePkg: String, moduleUserId: Int, scopePkgs: List<String>): String =
+      "$modulePkg:$moduleUserId:${scopePkgs.joinToString(",")}"
+
+  private fun cancelByTag(tag: String) {
+    runCatching {
+          val id = tag.hashCode()
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            nm?.cancelNotificationWithTag("android", "android", tag, id, 0)
+          } else {
+            nm?.cancelNotificationWithTag("android", tag, id, 0)
+          }
+        }
+        .onFailure { Log.e(TAG, "Failed to cancel notification $tag", it) }
+  }
+
+  /** The activation reminder is transient; the restart reminder remains valid after activation. */
+  private fun notActivatedTag(modulePkg: String) = "$modulePkg:not-activated"
+
+  /** Cancel only the stale "module is not activated yet" notice. */
+  fun cancelModuleUpdated(modulePkg: String) = cancelByTag(notActivatedTag(modulePkg))
+
+  fun cancelScopeRequest(modulePkg: String, moduleUserId: Int, scopePkgs: List<String>) {
+    cancelByTag(scopeTag(modulePkg, moduleUserId, scopePkgs))
+  }
+
+  /** First button/delete-intent wins; later deliveries for the same prompt are ignored. */
+  fun claimScopeAnswer(modulePkg: String, moduleUserId: Int, scopePkgs: List<String>): Boolean =
+      ScopeRequestTracker.claim(scopeTag(modulePkg, moduleUserId, scopePkgs)) != null
+
+  /**
+   * Claim and remove all other unanswered prompts from one module before cancelling them. The
+   * returned callbacks are failed by the caller after the user's "never ask again" decision.
+   */
+  fun withdrawScopeRequests(modulePkg: String): List<IXposedScopeCallback> {
+    val withdrawn = ScopeRequestTracker.claimAllOf(modulePkg)
+    withdrawn.keys.forEach(::cancelByTag)
+    return withdrawn.values.toList()
+  }
+
+  private fun abandonScopeRequest(
+      abandoned: ScopeRequestTracker.Abandoned,
+      reason: String,
+  ) {
+    cancelByTag(abandoned.tag)
+    runCatching { abandoned.callback.onScopeRequestFailed(reason) }
+        .onFailure { Log.w(TAG, "Could not report abandoned scope request ${abandoned.tag}", it) }
+  }
+
+  /**
+   * Posts one prompt for the whole request list, with one callback for the whole request.
+   *
+   * The caller supplies packages in canonical distinct/sorted order. The same list is encoded in
+   * the Intent path because PendingIntent identity ignores extras, while a comma cannot occur in an
+   * Android package name. This is a semantic backport of JingMatrix/Vector@4fcea0e; Vector-SR keeps
+   * its existing notification resources and old Manager integration.
+   */
   fun requestModuleScope(
       modulePkg: String,
       moduleUserId: Int,
-      scopePkg: String,
-      callback: IXposedScopeCallback
+      scopePkgs: List<String>,
+      callback: IXposedScopeCallback,
   ) {
+    val tag = scopeTag(modulePkg, moduleUserId, scopePkgs)
+    val abandoned = ScopeRequestTracker.post(tag, callback)
+    if (abandoned == null) {
+      Log.w(TAG, "Too many unanswered scope requests from $modulePkg; refusing $scopePkgs")
+      runCatching {
+        callback.onScopeRequestFailed("Too many scope requests are already waiting for an answer")
+      }
+      return
+    }
+    abandoned.forEach {
+      abandonScopeRequest(it, "Scope request dropped: too many are waiting on this device")
+    }
+
     val context = FakeContext()
     val userName = userManager?.getUserName(moduleUserId) ?: moduleUserId.toString()
+    val scopeText = scopePkgs.joinToString()
 
-    fun createActionIntent(actionParams: String, requestCode: Int): PendingIntent {
+    fun createActionIntent(action: String, requestCode: Int): PendingIntent {
       val intent =
           Intent(moduleScopeAction).apply {
             setPackage("android")
@@ -154,8 +223,8 @@ object NotificationManager {
                 Uri.Builder()
                     .scheme("module")
                     .encodedAuthority("$modulePkg:$moduleUserId")
-                    .encodedPath(scopePkg)
-                    .appendQueryParameter("action", actionParams)
+                    .encodedPath(scopePkgs.joinToString(","))
+                    .appendQueryParameter("action", action)
                     .build()
             putExtras(Bundle().apply { putBinder("callback", callback.asBinder()) })
           }
@@ -163,47 +232,66 @@ object NotificationManager {
           context,
           requestCode,
           intent,
-          PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+          PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+      )
     }
 
+    val content =
+        context.getString(
+            R.string.xposed_module_request_scope_content,
+            modulePkg,
+            userName,
+            scopeText,
+        )
     val notif =
         Notification.Builder(context, SCOPE_CHANNEL_ID)
             .setContentTitle(context.getString(R.string.xposed_module_request_scope_title))
-            .setContentText(
-                context.getString(
-                    R.string.xposed_module_request_scope_content, modulePkg, userName, scopePkg))
+            .setContentText(content)
             .setSmallIcon(getNotificationIcon())
             .addAction(
                 Notification.Action.Builder(
                         null,
                         context.getString(R.string.scope_approve),
-                        createActionIntent("approve", 4))
-                    .build())
+                        createActionIntent("approve", 4),
+                    )
+                    .build(),
+            )
             .addAction(
                 Notification.Action.Builder(
-                        null, context.getString(R.string.scope_deny), createActionIntent("deny", 5))
-                    .build())
+                        null,
+                        context.getString(R.string.scope_deny),
+                        createActionIntent("deny", 5),
+                    )
+                    .build(),
+            )
             .addAction(
                 Notification.Action.Builder(
                         null,
                         context.getString(R.string.never_ask_again),
-                        createActionIntent("block", 6))
-                    .build())
+                        createActionIntent("block", 6),
+                    )
+                    .build(),
+            )
+            .setDeleteIntent(createActionIntent("delete", 7))
+            .setTimeoutAfter(ScopeRequestTracker.TIMEOUT_MS)
             .setAutoCancel(true)
-            .setStyle(
-                Notification.BigTextStyle()
-                    .bigText(
-                        context.getString(
-                            R.string.xposed_module_request_scope_content,
-                            modulePkg,
-                            userName,
-                            scopePkg)))
+            .setStyle(Notification.BigTextStyle().bigText(content))
             .build()
             .apply { extras.putString("android.substName", BuildConfig.FRAMEWORK_NAME) }
 
     createChannels()
-    runCatching {
-      nm?.enqueueNotificationWithTag("android", opPkg, modulePkg, modulePkg.hashCode(), notif, 0)
+    val enqueued =
+        runCatching {
+              val service = checkNotNull(nm) { "notification manager unavailable" }
+              service.enqueueNotificationWithTag("android", opPkg, tag, tag.hashCode(), notif, 0)
+            }
+            .onFailure { Log.e(TAG, "Failed to post scope prompt $tag", it) }
+            .isSuccess
+
+    if (!enqueued) {
+      ScopeRequestTracker.claim(tag)?.let { pending ->
+        runCatching { pending.onScopeRequestFailed("Could not show the scope request") }
+      }
     }
   }
 
@@ -211,7 +299,7 @@ object NotificationManager {
       modulePackageName: String,
       moduleUserId: Int,
       enabled: Boolean,
-      systemModule: Boolean
+      systemModule: Boolean,
   ) {
     val context = FakeContext()
     val userName = userManager?.getUserName(moduleUserId) ?: moduleUserId.toString()
@@ -221,7 +309,8 @@ object NotificationManager {
             if (enabled) {
               if (systemModule) R.string.xposed_module_updated_notification_title_system
               else R.string.xposed_module_updated_notification_title
-            } else R.string.module_is_not_activated_yet)
+            } else R.string.module_is_not_activated_yet,
+        )
 
     val content =
         context.getString(
@@ -233,7 +322,14 @@ object NotificationManager {
               else R.string.module_is_not_activated_yet_multi_user_detailed
             },
             modulePackageName,
-            userName)
+            userName,
+        )
+
+    // Notifications are posted as user 0. Prefer a user-0 destination whenever the module exists
+    // there; otherwise retain the triggering profile for modules installed only in a secondary user.
+    val linkUserId =
+        if (packageManager?.isPackageAvailable(modulePackageName, 0, true) == true) 0
+        else moduleUserId
 
     val intent =
         Intent(openManagerAction).apply {
@@ -241,7 +337,7 @@ object NotificationManager {
           data =
               Uri.Builder()
                   .scheme("module")
-                  .encodedAuthority("$modulePackageName:$moduleUserId")
+                  .encodedAuthority("$modulePackageName:$linkUserId")
                   .build()
         }
     val pi =
@@ -261,9 +357,11 @@ object NotificationManager {
             .apply { extras.putString("android.substName", BuildConfig.FRAMEWORK_NAME) }
 
     createChannels()
+    // Keep the two meanings separate: activation makes only the "not activated" notice stale;
+    // "module updated, restart scoped apps" remains true until the user actually restarts them.
+    val tag = if (enabled) modulePackageName else notActivatedTag(modulePackageName)
     runCatching {
-      nm?.enqueueNotificationWithTag(
-          "android", opPkg, modulePackageName, modulePackageName.hashCode(), notif, 0)
+      nm?.enqueueNotificationWithTag("android", opPkg, tag, tag.hashCode(), notif, 0)
     }
   }
 }
