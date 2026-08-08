@@ -220,15 +220,17 @@ public class App extends Application {
             public void onReceive(Context context, Intent inIntent) {
                 var intent = (Intent) inIntent.getParcelableExtra(Intent.EXTRA_INTENT);
                 Log.d(TAG, "onReceive: " + intent);
+                if (intent == null) return;
                 switch (intent.getAction()) {
                     case Intent.ACTION_PACKAGE_ADDED, Intent.ACTION_PACKAGE_CHANGED, Intent.ACTION_PACKAGE_FULLY_REMOVED, Intent.ACTION_UID_REMOVED -> {
-                        var userId = intent.getIntExtra(Intent.EXTRA_USER, 0);
-                        var packageName = intent.getStringExtra("android.intent.extra.PACKAGES");
+                        var userId = inIntent.getIntExtra(Intent.EXTRA_USER, 0);
+                        var packageName = inIntent.getStringExtra("android.intent.extra.PACKAGES");
                         var packageRemovedForAllUsers = intent.getBooleanExtra(EXTRA_REMOVED_FOR_ALL_USERS, false);
-                        var isXposedModule = intent.getBooleanExtra("isXposedModule", false);
+                        var isXposedModule = inIntent.getBooleanExtra("isXposedModule", false);
                         if (packageName != null) {
-                            if (isXposedModule)
-                                ModuleUtil.getInstance().reloadSingleModule(packageName, userId, packageRemovedForAllUsers);
+                            var moduleUtil = ModuleUtil.getInstance();
+                            if (isXposedModule || moduleUtil.getModule(packageName, userId) != null)
+                                moduleUtil.reloadSingleModule(packageName, userId, packageRemovedForAllUsers);
                             else
                                 App.getExecutorService().submit(() -> AppHelper.getAppList(true));
                         }
