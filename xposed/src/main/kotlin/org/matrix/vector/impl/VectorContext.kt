@@ -66,6 +66,19 @@ class VectorContext(
 
     private val remotePrefs = ConcurrentHashMap<String, SharedPreferences>()
 
+    // A context belongs to exactly one module generation. Once a successful API102 handover retires
+    // that generation, registration through this context must stay disabled even if old module
+    // objects or threads remain reachable. Pre-commit failure/refusal may unfreeze the old context.
+    @Volatile private var frozen = false
+
+    fun freeze() {
+        frozen = true
+    }
+
+    fun unfreeze() {
+        frozen = false
+    }
+
     override fun getFrameworkName(): String = BuildConfig.FRAMEWORK_NAME
 
     override fun getFrameworkVersion(): String = BuildConfig.VERSION_NAME
@@ -77,14 +90,19 @@ class VectorContext(
     }
 
     override fun hook(origin: Executable): XposedInterface.HookBuilder {
-        return VectorHookBuilder(packageName, origin, defaultExceptionMode)
+        return VectorHookBuilder(packageName, origin, { frozen }, defaultExceptionMode)
     }
 
     override fun hookClassInitializer(origin: Class<*>): XposedInterface.HookBuilder {
         val clinit =
             findStaticInitializer(origin)
                 ?: throw IllegalArgumentException("Class ${origin.name} has no static initializer")
-        return VectorHookBuilder(packageName, asSyntheticMethod(clinit), defaultExceptionMode)
+        return VectorHookBuilder(
+            packageName,
+            asSyntheticMethod(clinit),
+            { frozen },
+            defaultExceptionMode,
+        )
     }
 
     /**
