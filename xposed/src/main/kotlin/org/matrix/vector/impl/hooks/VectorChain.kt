@@ -17,6 +17,9 @@ class VectorHookRecord(
     val hooker: XposedInterface.Hooker,
     val exceptionMode: ExceptionMode,
 ) {
+    // This is handle/registry liveness, not invocation liveness. A callback already copied by
+    // native callbackSnapshot must be allowed to finish after an API102 replacement invalidates
+    // the old handle.
     private val active = AtomicBoolean(true)
 
     fun isActive(): Boolean = active.get()
@@ -70,10 +73,10 @@ class VectorChain(
         val nextChain =
             VectorChain(executable, thisObject, currentArgs, hooks, hookIndex + 1, terminal)
         val record = hooks[hookIndex]
-        if (!record.isActive()) {
-            return executeDownstream { nextChain.internalProceed(thisObject, currentArgs) }
-        }
 
+        // Do not consult record.isActive() here. The native snapshot is the invocation boundary:
+        // once a callback was copied into this invocation it belongs to this call even if another
+        // thread atomically replaces or unhooks its handle afterwards.
         return try {
             executeDownstream { record.hooker.intercept(nextChain) }
         } catch (t: Throwable) {

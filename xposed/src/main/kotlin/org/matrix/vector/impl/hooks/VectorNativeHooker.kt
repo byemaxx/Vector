@@ -49,12 +49,20 @@ class VectorHookBuilder(
 
         if (hookKey != null) {
             synchronized(HookRegistry) {
+                // Check again while holding the same Java-side registry lock used by replacement.
+                // This closes the window where a hot-reload freeze could retire this hooker after
+                // the optimistic check above but before it becomes visible in the registry.
+                if (HookRegistry.isFrozen(modulePackageName, hooker)) {
+                    throw IllegalStateException("Module $modulePackageName is frozen for hot reload")
+                }
+
                 val existing = HookRegistry.records[hookKey]
+                if (existing != null && existing.isActive()) {
+                    return replaceRecordLocked(existing, record, hookKey)
+                }
+
                 installRecord(record)
                 HookRegistry.records[hookKey] = record
-                if (existing != null) {
-                    uninstallRecord(existing)
-                }
                 return VectorHookHandle(record, hookKey)
             }
         }
@@ -136,8 +144,8 @@ private object HookRegistry {
         return frozenLoaders[modulePackageName]?.contains(classLoader) == true
     }
 
-    fun handlesForModule(modulePackageName: String): List<HookHandle> {
-        return allRecords
+    fun handlesForModule(modulePackageName: String): List<HookHandle> = synchronized(this) {
+        allRecords
             .filter { it.modulePackageName == modulePackageName && it.isActive() }
             .map {
                 VectorHookHandle(
@@ -162,9 +170,12 @@ internal fun unfreezeHooks(modulePackageName: String) {
 
 internal fun unhookAllModuleHooks(modulePackageName: String, except: Set<HookHandle> = emptySet()) {
     val excludedRecords = except.mapNotNull { (it as? VectorHookHandle)?.record }.toSet()
-    HookRegistry.allRecords
-        .filter { it.modulePackageName == modulePackageName && it !in excludedRecords }
-        .forEach(::uninstallRecord)
+    synchronized(HookRegistry) {
+        HookRegistry.allRecords
+            .filter { it.modulePackageName == modulePackageName && it !in excludedRecords }
+            .toList()
+            .forEach(::uninstallRecordLocked)
+    }
 }
 
 private class VectorHookHandle(val record: VectorHookRecord, private val hookKey: HookKey?) :
@@ -174,15 +185,12 @@ private class VectorHookHandle(val record: VectorHookRecord, private val hookKey
     override fun getId(): String? = record.id
 
     override fun unhook() {
-        if (uninstallRecord(record)) {
-            hookKey?.let { key -> HookRegistry.records.remove(key, record) }
+        synchronized(HookRegistry) {
+            uninstallRecordLocked(record)
         }
     }
 
     override fun replaceHook(hooker: Hooker): HookHandle {
-        if (!record.isActive()) {
-            throw IllegalStateException("Hook handle is no longer valid")
-        }
         val replacement =
             VectorHookRecord(
                 modulePackageName = record.modulePackageName,
@@ -197,14 +205,8 @@ private class VectorHookHandle(val record: VectorHookRecord, private val hookKey
             if (!record.isActive()) {
                 throw IllegalStateException("Hook handle is no longer valid")
             }
-            // TODO(API102): implement native HookBridge atomic replacement. The current
-            // Java-level active-record swap prevents duplicate Java callbacks, but native
-            // install/uninstall is not a single primitive and is not full API 102 compliance.
-            installRecord(replacement)
-            hookKey?.let { key -> HookRegistry.records[key] = replacement }
-            uninstallRecord(record)
+            return replaceRecordLocked(record, replacement, hookKey)
         }
-        return VectorHookHandle(replacement, hookKey)
     }
 }
 
@@ -223,7 +225,45 @@ private fun installRecord(record: VectorHookRecord) {
     HookRegistry.allRecords.add(record)
 }
 
-private fun uninstallRecord(record: VectorHookRecord): Boolean {
+/**
+ * Replaces one modern callback using API102's native atomic primitive.
+ *
+ * The native operation is performed before Java bookkeeping changes. If allocation or lookup fails,
+ * replaceCallback() leaves the old callback installed and this function throws without changing the
+ * registry. A callbackSnapshot taken before the swap owns a Java reference to [oldRecord], so it may
+ * finish the old generation even after the handle is invalidated here; new snapshots see only
+ * [replacement].
+ */
+private fun replaceRecordLocked(
+    oldRecord: VectorHookRecord,
+    replacement: VectorHookRecord,
+    hookKey: HookKey?,
+): HookHandle {
+    if (!oldRecord.isActive()) {
+        throw IllegalStateException("Hook handle is no longer valid")
+    }
+    if (
+        !HookBridge.replaceCallback(
+            true,
+            oldRecord.executable,
+            oldRecord,
+            replacement,
+            replacement.priority,
+        )
+    ) {
+        throw HookFailedError("Cannot replace the hook on ${oldRecord.executable}")
+    }
+
+    // Native state is committed at this point. Invalidate the old handle without suppressing an
+    // already-snapshotted callback; dispatch deliberately does not consult this bookkeeping flag.
+    oldRecord.deactivate()
+    HookRegistry.allRecords.remove(oldRecord)
+    HookRegistry.allRecords.add(replacement)
+    hookKey?.let { HookRegistry.records[it] = replacement }
+    return VectorHookHandle(replacement, hookKey)
+}
+
+private fun uninstallRecordLocked(record: VectorHookRecord): Boolean {
     if (!record.deactivate()) return false
     HookBridge.unhookMethod(true, record.executable, record)
     record.id?.let { id ->
@@ -247,14 +287,15 @@ class VectorNativeHooker<T : Executable>(private val method: T) {
         val thisObject = if (isStatic) null else args[0]
         val actualArgs = if (isStatic) args else args.sliceArray(1 until args.size)
 
-        // Null means every hook was removed after this trampoline was entered.
+        // Null means every hook was removed after this trampoline was entered. Once a snapshot is
+        // returned, its callbacks remain authoritative for this invocation even if a concurrent
+        // API102 replacement invalidates their handles; the Java array holds strong references.
         val snapshots =
             HookBridge.callbackSnapshot(VectorHookRecord::class.java, method)
                 ?: return invokeOriginalSafely(thisObject, actualArgs)
 
         @Suppress("UNCHECKED_CAST")
-        val modernHooks =
-            (snapshots[0] as Array<VectorHookRecord>).filter { it.isActive() }.toTypedArray()
+        val modernHooks = snapshots[0] as Array<VectorHookRecord>
         val legacyHooks = snapshots[1]
 
         if (modernHooks.isEmpty() && legacyHooks.isEmpty()) {
