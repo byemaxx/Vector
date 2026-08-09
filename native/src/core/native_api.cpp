@@ -2,6 +2,7 @@
 
 #include <sys/mman.h>
 
+#include <algorithm>
 #include <functional>
 #include <list>
 #include <memory>
@@ -60,13 +61,13 @@ using lsplant::operator""_sym;
  * -------------------------------------------------------------------------------------------
  * inline static auto my_hook =
  *     "__open"_sym.hook ->* []<auto backup>(const char* path, int flags) {
- *         // 1. Pre-processing (Before original)
+ *         // Pre-processing (Before original)
  *         LOGD("Opening file: %s", path);
  *
- *         // 2. Call Original (The "Backup")
+ *         // Call Original
  *         int result = backup(path, flags);
  *
- *         // 3. Post-processing (After original)
+ *         // Post-processing (After original)
  *         return result;
  *     };
  *
@@ -142,6 +143,15 @@ void RegisterNativeLib(const std::string &library_name) {
     }
 
     std::lock_guard<std::mutex> lock(g_module_registry_mutex);
+    // Hot reload records the declared native entry names again for the successor generation.
+    // Native libraries are process-lifetime resources from the framework's point of view: API102
+    // deliberately does not dlclose/JNI_OnUnload them. Keep the registry idempotent so repeated
+    // generations do not grow the dlopen scan list without bound.
+    if (std::find(g_module_native_libs.begin(), g_module_native_libs.end(), library_name) !=
+        g_module_native_libs.end()) {
+        LOGD("Native module library '{}' is already registered.", library_name.c_str());
+        return;
+    }
     g_module_native_libs.push_back(library_name);
     LOGD("Native module library '{}' has been registered.", library_name.c_str());
 }

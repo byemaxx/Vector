@@ -19,6 +19,7 @@ import org.lsposed.lspd.models.Module
 import org.matrix.vector.daemon.BuildConfig
 import org.matrix.vector.daemon.VectorDaemon
 import org.matrix.vector.daemon.ipc.InjectedModuleService
+import org.matrix.vector.daemon.ipc.ModuleService
 import org.matrix.vector.daemon.system.*
 import org.matrix.vector.daemon.utils.InstallerVerifier
 import org.matrix.vector.daemon.utils.applySqliteHelperWorkaround
@@ -151,6 +152,7 @@ object ConfigCache {
     Log.d(TAG, "Executing Cache Update...")
     val db = dbHelper.readableDatabase
     val oldState = state
+    val oldModuleIdentities = moduleCodeIdentities
 
     val newModules = mutableMapOf<String, Module>()
     val newModuleIdentities = mutableMapOf<String, ModuleCodeIdentity>()
@@ -331,6 +333,16 @@ object ConfigCache {
           state.copy(modules = newModules, scopes = newScopes, configGeneration = nextGeneration)
       moduleCodeIdentities = newModuleIdentities
       staticScopes = newStaticScopes
+    }
+
+    // Drive auto hot reload from the state that actually won the cache swap, never from a timed
+    // package-broadcast poll. On the first cache commit there is normally no stale target, so this
+    // is a no-op; the old-identity-null case intentionally covers an early system_server generation
+    // that loaded before PackageManager/cache readiness and became stale before that first commit.
+    newModules.forEach { (packageName, module) ->
+      val oldIdentity = oldModuleIdentities[packageName]
+      val newIdentity = newModuleIdentities[packageName] ?: return@forEach
+      if (oldIdentity == null || oldIdentity != newIdentity) ModuleService.autoHotReload(module)
     }
 
     Log.d(TAG, "Cache Update Complete. Map Swap successful.")

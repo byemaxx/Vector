@@ -9,13 +9,12 @@ import io.github.libxposed.api.XposedModule
 import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam
 import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
+import io.github.libxposed.service.IXposedService
 import java.io.File
-import java.lang.reflect.Array
-import java.util.Collections
-import java.util.IdentityHashMap
 import java.util.Properties
 import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.ZipFile
+import org.lsposed.lspd.models.HotReloadOutcome
 import org.lsposed.lspd.models.Module
 import org.lsposed.lspd.util.Utils.Log
 import org.matrix.vector.impl.VectorContext
@@ -29,7 +28,6 @@ import org.matrix.vector.nativebridge.NativeAPI
 object VectorModuleManager {
 
     private const val TAG = "VectorModuleManager"
-    private const val ENABLE_SYSTEM_SERVER_HOT_RELOAD = false
 
     private val moduleStates = java.util.concurrent.ConcurrentHashMap<String, ModuleState>()
     private val generationCounter = AtomicLong(1)
@@ -58,6 +56,10 @@ object VectorModuleManager {
         val apkPath: String?,
     )
 
+    private class HotReloadUnsupportedException(message: String) : IllegalStateException(message)
+
+    private class HotReloadRefusedException : IllegalStateException("Module refused hot reload")
+
     private class HotReloadCommittedException(cause: Throwable) :
         IllegalStateException("New module generation was committed but onHotReloaded failed", cause)
 
@@ -79,13 +81,15 @@ object VectorModuleManager {
                 .onFailure { Log.e(TAG, "Error in onModuleLoaded for ${entry.javaClass.name}", it) }
         }
 
-        if (isHotReloadEligible(state)) {
-            VectorServiceClient.registerHotReloadTarget(
-                module.packageName,
-                module.versionCode,
-                VectorHotReloadTarget,
-            )
-        }
+        // getRunningTargets() describes processes that are running the modern module, not only
+        // processes whose descriptor is reloadable. Upstream exposes a multi-entry module here and
+        // answers HOT_RELOAD_UNSUPPORTED only when a reload is requested. Register every loaded
+        // modern module and keep descriptor validation on the actual reload path.
+        VectorServiceClient.registerHotReloadTarget(
+            module.packageName,
+            module.versionCode,
+            VectorHotReloadTarget,
+        )
 
         Log.d(TAG, "Loaded module ${module.packageName} generation=${state.generationId}")
         return true
@@ -131,6 +135,8 @@ object VectorModuleManager {
                 )
 
             // Native entrypoints must be known before an entry constructor or callback can dlopen.
+            // API 102 deliberately does not unload native code on a generation swap; modules that
+            // use native state must quiesce old threads/hooks/JNI refs from onHotReloading().
             module.file.moduleLibraryNames.forEach(NativeAPI::recordNativeEntrypoint)
 
             val entries = instantiateEntries(module, moduleClassLoader, vectorContext)
@@ -162,34 +168,73 @@ object VectorModuleManager {
         }
     }
 
+    fun hotReloadModuleWithOutcome(module: Module, extras: Bundle?): HotReloadOutcome {
+        return try {
+            hotReloadModule(module, extras)
+            outcome(
+                IXposedService.HOT_RELOAD_SUCCEEDED,
+                message = null,
+                generationChanged = true,
+            )
+        } catch (_: HotReloadRefusedException) {
+            outcome(
+                IXposedService.HOT_RELOAD_FAILED,
+                message = null,
+                refused = true,
+            )
+        } catch (e: HotReloadUnsupportedException) {
+            outcome(IXposedService.HOT_RELOAD_UNSUPPORTED, e.message ?: "Hot reload unsupported")
+        } catch (e: HotReloadCommittedException) {
+            outcome(
+                IXposedService.HOT_RELOAD_FAILED,
+                describe(e.cause ?: e),
+                generationChanged = true,
+            )
+        } catch (e: Throwable) {
+            outcome(IXposedService.HOT_RELOAD_FAILED, describe(e))
+        }
+    }
+
     @Synchronized
-    fun hotReloadModule(module: Module, extras: Bundle?) {
+    private fun hotReloadModule(module: Module, extras: Bundle?) {
         Log.i(TAG, "RELOAD_REQUESTED package=${module.packageName} version=${module.versionCode}")
         val oldState =
             moduleStates[module.packageName]
-                ?: throw IllegalStateException("Module ${module.packageName} is not loaded")
+                ?: throw HotReloadUnsupportedException(
+                    "Module ${module.packageName} is not loaded",
+                )
         if (!isHotReloadEligible(oldState)) {
-            throw IllegalArgumentException("Hot reload is unsupported for ${module.packageName}")
+            throw HotReloadUnsupportedException(
+                "Hot reload is unsupported for ${module.packageName}",
+            )
         }
 
-        extras?.let { validateClassLoaderNeutralValue(it, oldState.classLoaders, "extras") }
+        // The service Bundle has already crossed Binder before it reaches this process. API102 asks
+        // callers to keep it classloader-neutral; the framework does not impose an additional type
+        // whitelist here, matching libxposed/upstream behavior.
 
         // Only entries that have not detached are allowed to participate in the handover. Holding
         // them in this local list keeps the old generation reachable until the new callback ends.
         val oldEntries = oldState.entries.filter(VectorLifecycleManager::isActive)
         if (oldEntries.isEmpty()) {
-            throw IllegalStateException("Every entry of ${module.packageName} has detached")
+            throw HotReloadUnsupportedException(
+                "Every entry of ${module.packageName} has detached",
+            )
         }
 
         val newMetadata = readModuleMetadata(module)
-        if (!isHotReloadDescriptorEligible(module, newMetadata, oldState.isSystemServer)) {
-            throw IllegalArgumentException("The new generation is not API102 hot-reload compatible")
+        if (!isHotReloadDescriptorEligible(module)) {
+            throw HotReloadUnsupportedException(
+                "The new generation is not API102 hot-reload compatible",
+            )
         }
 
         // Build the complete successor before freezing or calling any old-generation module code.
         val newState =
             buildGeneration(module, oldState.isSystemServer, oldState.processName, newMetadata)
-                ?: throw IllegalStateException("Cannot build a new generation of ${module.packageName}")
+                ?: throw HotReloadUnsupportedException(
+                    "Cannot build a new generation of ${module.packageName}",
+                )
         val newEntries = newState.entries
         val oldClassLoaders = oldState.classLoaders
 
@@ -209,11 +254,7 @@ object VectorModuleManager {
                     override fun getExtras(): Bundle? = extras
 
                     override fun setSavedInstanceState(outState: Any?) {
-                        validateClassLoaderNeutralValue(
-                            outState,
-                            oldClassLoaders,
-                            "savedInstanceState",
-                        )
+                        rejectOldGenerationState(outState, oldClassLoaders)
                         savedInstanceState = outState
                     }
                 }
@@ -228,7 +269,7 @@ object VectorModuleManager {
                 }
             if (!accepted) {
                 Log.i(TAG, "OLD_REJECTED package=${module.packageName}")
-                throw IllegalStateException("Module refused hot reload")
+                throw HotReloadRefusedException()
             }
 
             // Snapshot after the freeze and after old code had its opportunity to unhook. The new
@@ -295,6 +336,22 @@ object VectorModuleManager {
         }
     }
 
+    private fun outcome(
+        status: Int,
+        message: String?,
+        refused: Boolean = false,
+        generationChanged: Boolean = false,
+    ) =
+        HotReloadOutcome().apply {
+            this.status = status
+            this.message = message
+            this.refused = refused
+            this.generationChanged = generationChanged
+        }
+
+    private fun describe(t: Throwable): String =
+        "${t.javaClass.name}: ${t.message ?: "no message"}"
+
     private fun readModuleMetadata(module: Module): ModuleMetadata =
         runCatching {
                 ZipFile(module.apkPath).use { zip ->
@@ -346,23 +403,13 @@ object VectorModuleManager {
             .getOrDefault(ModuleMetadata(0, ExceptionMode.PROTECTIVE))
 
     private fun isHotReloadEligible(state: ModuleState): Boolean =
-        isHotReloadDescriptorEligible(
-            state.module,
-            ModuleMetadata(state.targetApiVersion, ExceptionMode.PROTECTIVE),
-            state.isSystemServer,
-        )
+        isHotReloadDescriptorEligible(state.module)
 
-    private fun isHotReloadDescriptorEligible(
-        module: Module,
-        metadata: ModuleMetadata,
-        isSystemServer: Boolean,
-    ): Boolean {
-        return metadata.targetApiVersion >= 102 &&
-            !module.file.legacy &&
-            module.file.moduleClassNames.size == 1 &&
-            module.file.moduleLibraryNames.isEmpty() &&
-            (!isSystemServer || ENABLE_SYSTEM_SERVER_HOT_RELOAD)
-    }
+    // The libxposed API defines hot-reloadability by descriptor, not by targetApiVersion: a modern
+    // module with exactly one Java entry is a valid target. targetApiVersion still controls API102
+    // runtime behavior such as legacy-API isolation for the generation itself.
+    private fun isHotReloadDescriptorEligible(module: Module): Boolean =
+        !module.file.legacy && module.file.moduleClassNames.size == 1
 
     private fun buildLibrarySearchPath(module: Module, isSystemServer: Boolean): String = buildString {
         if (isSystemServer) {
@@ -417,96 +464,49 @@ object VectorModuleManager {
         return entries
     }
 
-    @Suppress("DEPRECATION")
-    private fun validateClassLoaderNeutralValue(
-        value: Any?,
-        oldClassLoaders: Set<ClassLoader>,
-        path: String,
-        seen: MutableSet<Any> = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>()),
-    ) {
-        if (value == null) return
-        if (containsOldClassLoaderObject(value, oldClassLoaders)) {
-            throw IllegalArgumentException("$path must not contain old module classloader objects")
-        }
-        if (!seen.add(value)) return
-        val classLoader = value.javaClass.classLoader
-        if (
-            classLoader != null &&
-                classLoader !== String::class.java.classLoader &&
-                classLoader !in oldClassLoaders &&
-                !value.javaClass.name.startsWith("android.") &&
-                !value.javaClass.name.startsWith("java.") &&
-                !value.javaClass.name.startsWith("kotlin.")
-        ) {
-            throw IllegalArgumentException("$path contains custom class ${value.javaClass.name}")
-        }
-        if (value is Bundle) {
-            value.classLoader = XposedModule::class.java.classLoader
-            value.keySet().forEach { key ->
-                validateClassLoaderNeutralValue(value.get(key), oldClassLoaders, "$path.$key", seen)
-            }
-        } else if (value is Map<*, *>) {
-            value.entries.forEachIndexed { index, entry ->
-                validateClassLoaderNeutralValue(
-                    entry.key,
-                    oldClassLoaders,
-                    "$path.mapKey[$index]",
-                    seen,
-                )
-                validateClassLoaderNeutralValue(
-                    entry.value,
-                    oldClassLoaders,
-                    "$path.mapValue[$index]",
-                    seen,
-                )
-            }
-        } else if (value is Iterable<*>) {
-            value.forEachIndexed { index, item ->
-                validateClassLoaderNeutralValue(item, oldClassLoaders, "$path[$index]", seen)
-            }
-        } else if (value.javaClass.isArray) {
-            for (index in 0 until Array.getLength(value)) {
-                validateClassLoaderNeutralValue(
-                    Array.get(value, index),
-                    oldClassLoaders,
-                    "$path[$index]",
-                    seen,
-                )
-            }
+    /**
+     * API102's saved-state check is deliberately shallow: it is a diagnostic aid, not an object
+     * graph verifier. Reject the value itself plus direct array/collection/map members when they are
+     * defined by the retiring module classloader, matching libxposed/upstream semantics.
+     */
+    private fun rejectOldGenerationState(state: Any?, oldClassLoaders: Set<ClassLoader>) {
+        if (state == null) return
+        rejectOldGenerationValue(state, oldClassLoaders)
+        when (state) {
+            is Array<*> ->
+                state.forEach { value ->
+                    value?.let { rejectOldGenerationValue(it, oldClassLoaders) }
+                }
+            is Collection<*> ->
+                state.forEach { value ->
+                    value?.let { rejectOldGenerationValue(it, oldClassLoaders) }
+                }
+            is Map<*, *> ->
+                state.forEach { (key, value) ->
+                    key?.let { rejectOldGenerationValue(it, oldClassLoaders) }
+                    value?.let { rejectOldGenerationValue(it, oldClassLoaders) }
+                }
         }
     }
 
-    @Suppress("DEPRECATION")
-    private fun containsOldClassLoaderObject(
-        value: Any?,
+    private fun rejectOldGenerationValue(value: Any, oldClassLoaders: Set<ClassLoader>) {
+        if (definedByOldGeneration(value.javaClass, oldClassLoaders)) {
+            throw IllegalArgumentException(
+                "Saved instance state contains ${value.javaClass.name}, which was created under " +
+                    "the old module classloader"
+            )
+        }
+    }
+
+    private fun definedByOldGeneration(
+        clazz: Class<*>,
         oldClassLoaders: Set<ClassLoader>,
-        seen: MutableSet<Any> = Collections.newSetFromMap(IdentityHashMap<Any, Boolean>()),
     ): Boolean {
-        if (value == null || !seen.add(value)) return false
-        if (value is ClassLoader && value in oldClassLoaders) return true
-        if (value is Class<*> && value.classLoader?.let { it in oldClassLoaders } == true) return true
-        if (value.javaClass.classLoader?.let { it in oldClassLoaders } == true) return true
-        if (value is Bundle) {
-            return value.keySet().any { key ->
-                runCatching { containsOldClassLoaderObject(value.get(key), oldClassLoaders, seen) }
-                    .getOrDefault(true)
-            }
-        }
-        if (value is Map<*, *>) {
-            return value.entries.any {
-                containsOldClassLoaderObject(it.key, oldClassLoaders, seen) ||
-                    containsOldClassLoaderObject(it.value, oldClassLoaders, seen)
-            }
-        }
-        if (value is Iterable<*>) {
-            return value.any { containsOldClassLoaderObject(it, oldClassLoaders, seen) }
-        }
-        if (value.javaClass.isArray) {
-            for (index in 0 until Array.getLength(value)) {
-                if (containsOldClassLoaderObject(Array.get(value, index), oldClassLoaders, seen)) {
-                    return true
-                }
-            }
+        var loader: ClassLoader? =
+            (if (clazz.isArray) clazz.componentType else clazz)?.classLoader
+        while (loader != null) {
+            if (loader in oldClassLoaders) return true
+            loader = loader.parent
         }
         return false
     }

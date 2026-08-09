@@ -157,7 +157,12 @@ object ModuleDatabase {
                 SQLiteDatabase.CONFLICT_IGNORE)
       } else count = 0
     }
-    if (!force && count > 0) ConfigCache.requestCacheUpdate()
+    if (!force) {
+      // A package update may keep exactly the same APK path. Rebuild unconditionally so the cache
+      // can compare the committed old/new ModuleCodeIdentity and trigger API102 auto hot reload
+      // without a polling window.
+      ConfigCache.requestCacheUpdate()
+    }
     return count > 0
   }
 

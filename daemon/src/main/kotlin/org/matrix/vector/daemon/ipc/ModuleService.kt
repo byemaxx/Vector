@@ -6,7 +6,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
-import android.os.Parcelable
 import android.os.RemoteException
 import android.os.SystemClock
 import android.util.Log
@@ -16,9 +15,11 @@ import io.github.libxposed.service.IXposedScopeCallback
 import io.github.libxposed.service.IXposedService
 import java.io.Serializable
 import java.util.Collections
+import java.util.Properties
 import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.zip.ZipFile
 import org.lsposed.lspd.models.Module
 import org.matrix.vector.daemon.BuildConfig
 import org.matrix.vector.daemon.data.ConfigCache
@@ -58,6 +59,10 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
      */
     private val binderExecutor =
         Executors.newCachedThreadPool { r -> Thread(r, "vector-module-binder") }
+
+    /** API102 reload work never runs inline on the module app's Binder thread. */
+    private val hotReloadExecutor =
+        Executors.newCachedThreadPool { r -> Thread(r, "vector-hot-reload") }
 
     fun uidClear() {
       uidSet.clear()
@@ -150,6 +155,55 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
         runCatching { binder.unlinkToDeath(recipient, 0) }
       }
     }
+
+    /** Trigger an app-update hot reload only when module.prop explicitly opts in. */
+    fun autoHotReload(module: Module) {
+      if (!isAutoHotReloadEnabled(module)) return
+      val targets = ApplicationService.getStaleHotReloadTargetIds(module)
+      targets.forEach { targetId ->
+        val reservation =
+            ApplicationService.beginHotReloadTarget(targetId, module.packageName, userId = null)
+        if (reservation != null) {
+          if (reservation.status != IXposedService.HOT_RELOAD_IN_PROGRESS) {
+            Log.w(
+                TAG,
+                "Auto hot reload of ${module.packageName} target=$targetId could not start: " +
+                    "${reservation.status}: ${reservation.message}",
+            )
+          }
+          return@forEach
+        }
+
+        runCatching {
+              hotReloadExecutor.execute {
+                val result = ApplicationService.runHotReloadTarget(targetId, module, null)
+                if (result.status != IXposedService.HOT_RELOAD_SUCCEEDED) {
+                  Log.w(
+                      TAG,
+                      "Auto hot reload of ${module.packageName} target=$targetId returned " +
+                          "${result.status}: ${result.message}",
+                  )
+                }
+              }
+            }
+            .onFailure {
+              ApplicationService.cancelHotReloadReservation(targetId)
+              Log.w(TAG, "Could not schedule auto hot reload for ${module.packageName}", it)
+            }
+      }
+    }
+
+    private fun isAutoHotReloadEnabled(module: Module): Boolean =
+        runCatching {
+              ZipFile(module.apkPath).use { zip ->
+                val entry = zip.getEntry("META-INF/xposed/module.prop") ?: return@use false
+                val props = Properties()
+                zip.getInputStream(entry).use { input -> props.load(input) }
+                props.getProperty("autoHotReload")?.trim().equals("true", ignoreCase = true)
+              }
+            }
+            .onFailure { Log.w(TAG, "Cannot read autoHotReload for ${module.packageName}", it) }
+            .getOrDefault(false)
   }
 
   /**
@@ -303,89 +357,69 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
   }
 
   override fun getRunningTargets(): List<HookedProcess> {
-    ensureModule()
-    return ApplicationService.getRunningTargets(loadedModule)
+    val userId = ensureModule()
+    val current = ConfigCache.getModuleByPackage(loadedModule.packageName) ?: loadedModule
+    return ApplicationService.getRunningTargets(current, userId)
   }
 
   override fun hotReloadModule(targetId: Long, data: Bundle?, callback: IHotReloadCallback?) {
-    ensureModule()
+    val userId = ensureModule()
+
+    // Invalid or cross-user target IDs take precedence over every ordinary unsupported condition,
+    // matching IXposedService's SecurityException contract and upstream's lookup order.
+    val targetHotReloadable =
+        ApplicationService.validateHotReloadTarget(targetId, loadedModule.packageName, userId)
+    if (!targetHotReloadable) {
+      report(
+          callback,
+          IXposedService.HOT_RELOAD_UNSUPPORTED,
+          "Module has no single Java entry class",
+      )
+      return
+    }
+
+    val latest =
+        ConfigCache.getModuleByPackage(loadedModule.packageName)
+            ?: run {
+              report(
+                  callback,
+                  IXposedService.HOT_RELOAD_UNSUPPORTED,
+                  "Module ${loadedModule.packageName} is not enabled",
+              )
+              return
+            }
+
+    // The Bundle has already crossed Binder into the framework process. API 102 only requires the
+    // caller to keep it classloader-neutral; adding a second framework-side type whitelist would
+    // incorrectly reject valid boot/framework Parcelable or Serializable values that upstream
+    // accepts. Invalid module-defined parcelables fail naturally while unmarshalling.
+
+    val reservation =
+        ApplicationService.beginHotReloadTarget(targetId, loadedModule.packageName, userId)
+    if (reservation != null) {
+      report(callback, reservation.status, reservation.message)
+      return
+    }
+
     runCatching {
-          val latest =
-              ConfigCache.getModuleByPackage(loadedModule.packageName)
-                  ?: throw HotReloadUnsupportedException(
-                      "Module ${loadedModule.packageName} is not enabled")
-          ensureHotReloadSupported(latest)
-          data?.let { validateHotReloadBundle(it) }
-          ApplicationService.hotReloadTarget(targetId, latest, data)
-          callback?.onHotReloadResult(IXposedService.HOT_RELOAD_SUCCEEDED, null)
+          hotReloadExecutor.execute {
+            val result = ApplicationService.runHotReloadTarget(targetId, latest, data)
+            report(callback, result.status, result.message)
+          }
         }
-        .onFailure { throwable ->
-          if (throwable is SecurityException) throw throwable
-          val status =
-              when (throwable) {
-                is HotReloadInProgressException -> IXposedService.HOT_RELOAD_IN_PROGRESS
-                is HotReloadProcessDiedException -> IXposedService.HOT_RELOAD_PROCESS_DIED
-                is HotReloadUnsupportedException -> IXposedService.HOT_RELOAD_UNSUPPORTED
-                else -> IXposedService.HOT_RELOAD_FAILED
-              }
-          callback?.onHotReloadResult(status, throwable.message)
+        .onFailure {
+          ApplicationService.cancelHotReloadReservation(targetId)
+          report(
+              callback,
+              IXposedService.HOT_RELOAD_FAILED,
+              "Could not enqueue hot reload: ${it.message ?: it.javaClass.name}",
+          )
         }
   }
 
-  private fun ensureHotReloadSupported(module: Module) {
-    when {
-      module.file.legacy ->
-          throw HotReloadUnsupportedException("Hot reload is unsupported for legacy modules")
-      module.file.moduleClassNames.isEmpty() ->
-          throw HotReloadUnsupportedException("Hot reload is unsupported for native-only modules")
-      module.file.moduleClassNames.size != 1 ->
-          throw HotReloadUnsupportedException("Hot reload requires exactly one Java entry class")
-      module.file.moduleLibraryNames.isNotEmpty() ->
-          throw HotReloadUnsupportedException(
-              "Hot reload is disabled for modules with native entries")
-    }
-  }
-
-  @Suppress("DEPRECATION")
-  private fun validateHotReloadBundle(bundle: Bundle) {
-    bundle.classLoader = javaClass.classLoader
-    bundle.keySet().forEach { key -> validateHotReloadValue(bundle.get(key), "data.$key") }
-  }
-
-  @Suppress("DEPRECATION")
-  private fun validateHotReloadValue(value: Any?, path: String) {
-    when (value) {
-      null,
-      is Boolean,
-      is Byte,
-      is Char,
-      is Short,
-      is Int,
-      is Long,
-      is Float,
-      is Double,
-      is String -> return
-      is Bundle -> validateHotReloadBundle(value)
-      is BooleanArray,
-      is ByteArray,
-      is CharArray,
-      is ShortArray,
-      is IntArray,
-      is LongArray,
-      is FloatArray,
-      is DoubleArray,
-      is Array<*> -> {
-        if (value is Array<*> && !value.all { it == null || it is String }) {
-          throw IllegalArgumentException("$path contains a custom object array")
-        }
-      }
-      is ArrayList<*> ->
-          value.forEachIndexed { index, item -> validateHotReloadValue(item, "$path[$index]") }
-      is Parcelable,
-      is Serializable ->
-          throw IllegalArgumentException("$path contains Parcelable/Serializable data")
-      else -> throw IllegalArgumentException("$path contains unsupported ${value.javaClass.name}")
-    }
+  private fun report(callback: IHotReloadCallback?, status: Int, message: String?) {
+    runCatching { callback?.onHotReloadResult(status, message) }
+        .onFailure { Log.w(TAG, "Cannot deliver hot reload result to ${loadedModule.packageName}", it) }
   }
 
   override fun requestRemotePreferences(group: String): Bundle {

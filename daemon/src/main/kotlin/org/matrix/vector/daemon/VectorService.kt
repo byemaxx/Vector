@@ -258,7 +258,7 @@ object VectorService : IDaemonService.Stub() {
     val appInfo =
         moduleName?.let {
           packageManager
-              ?.getPackageInfoCompat(it, MATCH_ALL_FLAGS or PackageManager.GET_META_DATA, 0)
+              ?.getPackageInfoCompat(it, MATCH_ALL_FLAGS or PackageManager.GET_META_DATA, userId)
               ?.applicationInfo
         }
     var isXposedModule =

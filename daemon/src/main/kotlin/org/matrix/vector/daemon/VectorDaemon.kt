@@ -26,7 +26,6 @@ import org.matrix.vector.daemon.data.FileSystem
 import org.matrix.vector.daemon.env.CliSocketServer
 import org.matrix.vector.daemon.env.Dex2OatServer
 import org.matrix.vector.daemon.env.LogcatMonitor
-import org.matrix.vector.daemon.ipc.ApplicationService
 import org.matrix.vector.daemon.ipc.BRIDGE_TRANSACTION_CODE
 import org.matrix.vector.daemon.ipc.ManagerService
 import org.matrix.vector.daemon.ipc.SystemServerService
@@ -197,8 +196,9 @@ object VectorDaemon {
                           "System Server died! Owner `${leaseResult.owner?.toLogString() ?: daemonInstanceId}` handling reinjection round=${lease.round}.")
                       try {
                         withRootIdentity {
-                          ApplicationService.clearHotReloadTargetsForSoftRestart(
-                              "system_server reinjection round=${lease.round}")
+                          // The dead system_server's heartbeat DeathRecipient removes only that
+                          // process's hot-reload targets. App processes may survive a KernelSU soft
+                          // restart, so their valid API102 targets must remain registered.
                           clearSystemCaches()
                           // KernelSU soft reboot keeps this daemon alive while Android services
                           // stop/start; keep the wrapper socket and only refresh the bind mounts.
