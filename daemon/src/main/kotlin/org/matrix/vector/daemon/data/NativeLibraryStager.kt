@@ -31,13 +31,28 @@ object NativeLibraryStager {
   fun prepareForSystemServer(modules: List<Module>): List<Module> {
     val root = ensureMiscPath() ?: return modules
 
-    modules.forEach { module ->
-      val file = module.file ?: return@forEach
-      file.nativeLibraryDir = stage(root, module.packageName, module.apkPath)
-    }
-
+    modules.forEach { stageModule(root, it) }
     prune(root, modules.mapTo(mutableSetOf()) { it.packageName })
     return modules
+  }
+
+  /**
+   * Stage the generation addressed by an already-existing system_server hot-reload target.
+   *
+   * Target ownership is historical: removing `system` from scope does not make the generation that
+   * is already running disappear. Reloading that target therefore must not depend on the module
+   * still being present in today's system scope. Do not prune sibling staging directories here.
+   */
+  fun prepareAddressedSystemServerModule(module: Module): Module? {
+    val root = ensureMiscPath() ?: return module
+    stageModule(root, module)
+    return module
+  }
+
+  private fun stageModule(root: Path, module: Module) {
+    val file = module.file ?: return
+    file.nativeLibraryDir =
+        stage(root, module.packageName, module.apkPath, module.versionCode)
   }
 
   /**
@@ -85,11 +100,20 @@ object NativeLibraryStager {
    * A staged ordinary file under xposed_data can be mapped executable with the framework's existing
    * policy. The stamp prevents stale native code after a module or framework update.
    */
-  private fun stage(root: Path, packageName: String, apkPath: String): String? =
+  private fun stage(
+      root: Path,
+      packageName: String,
+      apkPath: String,
+      versionCode: Long,
+  ): String? =
       runCatching {
             val apk = java.io.File(apkPath)
             val dir = root.resolve("lib").resolve(packageName)
-            val stamp = "${apk.length()}:${apk.lastModified()}:${BuildConfig.VERSION_CODE}"
+            // versionCode closes the same-size/same-mtime update edge that ModuleCodeIdentity can
+            // still distinguish. Early system_server modules may use 0; once PackageManager is up,
+            // the real version naturally causes one refresh of the staged generation.
+            val stamp =
+                "$versionCode:${apk.length()}:${apk.lastModified()}:${BuildConfig.VERSION_CODE}"
             val stampFile = dir.resolve(".stamp").toFile()
 
             if (stampFile.isFile && stampFile.readText() == stamp) {
@@ -134,15 +158,14 @@ object NativeLibraryStager {
 
   private fun prune(root: Path, keep: Set<String>) {
     runCatching {
-          val libRoot = root.resolve("lib")
-          if (!libRoot.isDirectory()) return
-          Files.list(libRoot).use { stream ->
-            stream
-                .filter { it.fileName.toString() !in keep }
-                .forEach { it.toFile().deleteRecursively() }
-          }
-        }
-        .onFailure { Log.e(TAG, "Failed to prune staged native libraries", it) }
+      val libRoot = root.resolve("lib")
+      if (!libRoot.isDirectory()) return
+      Files.list(libRoot).use { stream ->
+        stream
+            .filter { it.fileName.toString() !in keep }
+            .forEach { it.toFile().deleteRecursively() }
+      }
+    }.onFailure { Log.e(TAG, "Failed to prune staged native libraries", it) }
   }
 
   private fun setSelinuxContextRecursive(path: Path, context: String) {
