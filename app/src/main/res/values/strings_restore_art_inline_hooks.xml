@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_restore_art_inline_hooks">Invalidate inline hooks</string>
+    <string name="settings_restore_art_inline_hooks_summary">Restore LSPlant\'s libart.so inline hooks after startup for selected apps. This may cause random malfunctions or crashes; use it only for apps that cannot run normally while hooked. Changes apply the next time the app process starts.</string>
+</resources>
