@@ -25,6 +25,7 @@ import org.matrix.vector.daemon.data.ConfigCache
 import org.matrix.vector.daemon.data.FileSystem
 import org.matrix.vector.daemon.data.ModuleCodeIdentity
 import org.matrix.vector.daemon.data.NativeLibraryStager
+import org.matrix.vector.daemon.data.PreferenceStore
 import org.matrix.vector.daemon.system.PER_USER_RANGE
 import org.matrix.vector.daemon.system.ProcessFreezer
 import org.matrix.vector.daemon.utils.InstallerVerifier
@@ -41,6 +42,8 @@ const val DEX_TRANSACTION_CODE =
     ('_'.code shl 24) or ('D'.code shl 16) or ('E'.code shl 8) or 'X'.code
 const val OBFUSCATION_MAP_TRANSACTION_CODE =
     ('_'.code shl 24) or ('O'.code shl 16) or ('B'.code shl 8) or 'F'.code
+const val RESTORE_ART_INLINE_HOOKS_TRANSACTION_CODE =
+    ('_'.code shl 24) or ('I'.code shl 16) or ('N'.code shl 8) or 'L'.code
 
 internal class HotReloadUnsupportedException(message: String) : IllegalStateException(message)
 
@@ -134,6 +137,15 @@ object ApplicationService : ILSPApplicationService.Stub() {
           reply?.writeString(key)
           reply?.writeString(if (obfuscation) value else key)
         }
+        return true
+      }
+      RESTORE_ART_INLINE_HOOKS_TRANSACTION_CODE -> {
+        val info = ensureRegistered()
+        val restore =
+            info.key.uid != Process.SYSTEM_UID &&
+                PreferenceStore.shouldRestoreArtInlineHooks(info.processName, info.key.uid)
+        reply?.writeNoException()
+        reply?.writeInt(if (restore) 1 else 0)
         return true
       }
     }
