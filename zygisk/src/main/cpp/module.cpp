@@ -327,7 +327,7 @@ void VectorModule::preAppSpecialize(zygisk::AppSpecializeArgs *args) {
                 return;
             }
 
-            jint *gids_array = env_->GetArrayElements(args->gids, nullptr);
+            jint *gids_array = env_->GetIntArrayElements(args->gids, nullptr);
             env_->SetIntArrayRegion(new_gids, 0, original_gids_count, gids_array);
             env_->ReleaseIntArrayElements(args->gids, gids_array, JNI_ABORT);
 
