@@ -12,20 +12,30 @@ package org.lsposed.manager.ui.widget;
 import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
-import android.os.RemoteException;
 import android.util.AttributeSet;
-import android.util.Log;
+import android.view.LayoutInflater;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.CompoundButton;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.preference.MultiSelectListPreference;
+import androidx.preference.Preference;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
 
-import org.lsposed.lspd.ILSPManagerService;
 import org.lsposed.manager.App;
+import org.lsposed.manager.BuildConfig;
 import org.lsposed.manager.ConfigManager;
-import org.lsposed.manager.receivers.LSPManagerServiceHolder;
+import org.lsposed.manager.R;
+import org.lsposed.manager.adapters.AppHelper;
+import org.lsposed.manager.databinding.DialogIgnoredModuleUpdatesBinding;
+import org.lsposed.manager.databinding.ItemModuleBinding;
+import org.lsposed.manager.ui.dialog.BlurBehindDialogBuilder;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -33,12 +43,13 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Per-app compatibility list for restoring LSPlant's native ART inline hooks after startup.
+ * Per-app compatibility selector for restoring LSPlant's native ART inline hooks after startup.
  *
- * The daemon owns the persisted state. This preference only renders installed packages and
- * forwards the selected package names through the manager Binder service.
+ * Selection semantics intentionally mirror the module scope selector: every checkbox change is
+ * persisted immediately through the daemon service and is rolled back in the UI when persistence
+ * fails. This avoids relying on MultiSelectListPreference's delayed dialog-close persistence.
  */
-public class RestoreArtInlineHooksPreference extends MultiSelectListPreference {
+public class RestoreArtInlineHooksPreference extends Preference {
 
     public RestoreArtInlineHooksPreference(@NonNull Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
@@ -58,69 +69,154 @@ public class RestoreArtInlineHooksPreference extends MultiSelectListPreference {
     public void onAttached() {
         super.onAttached();
         setPersistent(false);
-        refreshEntries();
-        setOnPreferenceChangeListener((preference, newValue) -> saveSelection(newValue));
+        setEnabled(ConfigManager.isBinderAlive());
     }
 
-    private void refreshEntries() {
-        ILSPManagerService service = LSPManagerServiceHolder.getService();
-        if (service == null) {
+    @Override
+    protected void onClick() {
+        super.onClick();
+        if (!ConfigManager.isBinderAlive()) {
             setEnabled(false);
             return;
         }
-
-        PackageManager packageManager = getContext().getPackageManager();
-        Map<String, String> labels = new HashMap<>();
-        for (PackageInfo info : ConfigManager.getInstalledPackagesFromAllUsers(0, true)) {
-            if (info == null || info.packageName == null || info.applicationInfo == null) continue;
-            if ("android".equals(info.packageName)) continue;
-            CharSequence label = info.applicationInfo.loadLabel(packageManager);
-            String displayLabel = label == null ? info.packageName : label.toString();
-            labels.putIfAbsent(info.packageName, displayLabel);
-        }
-
-        List<Map.Entry<String, String>> packages = new ArrayList<>(labels.entrySet());
-        packages.sort((left, right) -> {
-            int byLabel = String.CASE_INSENSITIVE_ORDER.compare(left.getValue(), right.getValue());
-            if (byLabel != 0) return byLabel;
-            return left.getKey().compareTo(right.getKey());
-        });
-
-        CharSequence[] entries = new CharSequence[packages.size()];
-        CharSequence[] values = new CharSequence[packages.size()];
-        for (int i = 0; i < packages.size(); i++) {
-            Map.Entry<String, String> item = packages.get(i);
-            entries[i] = item.getValue() + " (" + item.getKey() + ")";
-            values[i] = item.getKey();
-        }
-        setEntries(entries);
-        setEntryValues(values);
-
-        try {
-            setValues(new HashSet<>(service.getRestoreArtInlineHookPackages()));
-            setEnabled(true);
-        } catch (RemoteException e) {
-            Log.e(App.TAG, "Failed to load ART inline hook restore list", e);
-            setEnabled(false);
-        }
+        showSelector();
     }
 
-    private boolean saveSelection(Object newValue) {
-        if (!(newValue instanceof Set<?>)) return false;
-        Set<?> selected = (Set<?>) newValue;
-        ILSPManagerService service = LSPManagerServiceHolder.getService();
-        if (service == null) return false;
+    private void showSelector() {
+        Context context = getContext();
+        PackageManager packageManager = context.getPackageManager();
+        Set<String> selectedPackages = ConfigManager.getRestoreArtInlineHookPackages();
 
-        List<String> packages = new ArrayList<>(selected.size());
-        for (Object value : selected) {
-            if (value instanceof String) packages.add((String) value);
+        // AppHelper is the same application source used by the normal module scope selector. The
+        // restore policy is package-wide, so collapse duplicate installations from multiple users.
+        Map<String, PackageInfo> packagesByName = new HashMap<>();
+        for (PackageInfo info : AppHelper.getAppList(false)) {
+            if (info == null || info.packageName == null || info.applicationInfo == null) continue;
+            if ("android".equals(info.packageName) || "system".equals(info.packageName)) continue;
+            if (BuildConfig.APPLICATION_ID.equals(info.packageName)) continue;
+            packagesByName.putIfAbsent(info.packageName, info);
         }
 
-        try {
-            return service.setRestoreArtInlineHookPackages(packages);
-        } catch (RemoteException e) {
-            Log.e(App.TAG, "Failed to save ART inline hook restore list", e);
-            return false;
+        List<PackageInfo> applications = new ArrayList<>(packagesByName.values());
+        Comparator<PackageInfo> appComparator =
+                AppHelper.getAppListComparator(App.getPreferences().getInt("list_sort", 0), packageManager);
+        applications.sort((left, right) -> {
+            boolean leftChecked = selectedPackages.contains(left.packageName);
+            boolean rightChecked = selectedPackages.contains(right.packageName);
+            if (leftChecked != rightChecked) return leftChecked ? -1 : 1;
+            return appComparator.compare(left, right);
+        });
+
+        DialogIgnoredModuleUpdatesBinding binding =
+                DialogIgnoredModuleUpdatesBinding.inflate(LayoutInflater.from(context));
+        binding.title.setText(R.string.settings_restore_art_inline_hooks);
+        binding.recyclerView.setLayoutManager(new LinearLayoutManager(context));
+
+        RestoreAppAdapter adapter =
+                new RestoreAppAdapter(packageManager, applications, selectedPackages);
+        adapter.setHasStableIds(true);
+        binding.recyclerView.setAdapter(adapter);
+
+        // Keep the list scrollable even on devices with hundreds of installed packages.
+        float density = context.getResources().getDisplayMetrics().density;
+        int itemHeight = (int) (density * 76);
+        int maxHeight = (int) (density * 520);
+        ViewGroup.LayoutParams layoutParams = binding.recyclerView.getLayoutParams();
+        layoutParams.height = Math.min(maxHeight, Math.max(itemHeight, applications.size() * itemHeight));
+        binding.recyclerView.setLayoutParams(layoutParams);
+
+        var dialog = new BlurBehindDialogBuilder(context)
+                .setView(binding.getRoot())
+                .create();
+        binding.cancel.setText(android.R.string.ok);
+        binding.cancel.setOnClickListener(v -> dialog.dismiss());
+        binding.title.setOnClickListener(v -> binding.recyclerView.smoothScrollToPosition(0));
+        dialog.show();
+    }
+
+    private static class RestoreAppAdapter extends RecyclerView.Adapter<RestoreAppAdapter.ViewHolder> {
+        private final PackageManager packageManager;
+        private final List<PackageInfo> applications;
+        private final Set<String> selectedPackages;
+
+        RestoreAppAdapter(PackageManager packageManager, List<PackageInfo> applications,
+                          Set<String> selectedPackages) {
+            this.packageManager = packageManager;
+            this.applications = applications;
+            this.selectedPackages = new HashSet<>(selectedPackages);
+        }
+
+        @NonNull
+        @Override
+        public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
+            return new ViewHolder(ItemModuleBinding.inflate(LayoutInflater.from(parent.getContext()),
+                    parent, false));
+        }
+
+        @Override
+        public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
+            PackageInfo info = applications.get(position);
+            String packageName = info.packageName;
+            CharSequence label = AppHelper.getAppLabel(info, packageManager);
+
+            holder.binding.appName.setText(label == null ? packageName : label);
+            holder.binding.appPackageName.setText(packageName);
+            holder.binding.appPackageName.setVisibility(View.VISIBLE);
+            holder.binding.appVersionName.setVisibility(View.GONE);
+            holder.binding.versionName.setVisibility(View.GONE);
+            holder.binding.description.setVisibility(View.GONE);
+            holder.binding.hint.setVisibility(View.GONE);
+            holder.binding.checkbox.setVisibility(View.VISIBLE);
+            holder.binding.appIcon.setImageDrawable(info.applicationInfo.loadIcon(packageManager));
+
+            holder.binding.checkbox.setOnCheckedChangeListener(null);
+            holder.binding.checkbox.setChecked(selectedPackages.contains(packageName));
+            attachListener(holder.binding.checkbox, packageName);
+            holder.itemView.setOnClickListener(v -> holder.binding.checkbox.toggle());
+        }
+
+        private void attachListener(CompoundButton checkbox, String packageName) {
+            checkbox.setOnCheckedChangeListener((button, isChecked) -> {
+                Set<String> updated = new HashSet<>(selectedPackages);
+                if (isChecked) {
+                    updated.add(packageName);
+                } else {
+                    updated.remove(packageName);
+                }
+
+                if (ConfigManager.setRestoreArtInlineHookPackages(updated)) {
+                    selectedPackages.clear();
+                    selectedPackages.addAll(updated);
+                    return;
+                }
+
+                // Match ScopeAdapter behavior: failed persistence must never leave the UI showing a
+                // state that the daemon did not accept.
+                button.setOnCheckedChangeListener(null);
+                button.setChecked(!isChecked);
+                attachListener(button, packageName);
+                Toast.makeText(button.getContext(), R.string.failed_to_save_scope_list,
+                        Toast.LENGTH_SHORT).show();
+            });
+        }
+
+        @Override
+        public long getItemId(int position) {
+            return applications.get(position).packageName.hashCode();
+        }
+
+        @Override
+        public int getItemCount() {
+            return applications.size();
+        }
+
+        static class ViewHolder extends RecyclerView.ViewHolder {
+            final ItemModuleBinding binding;
+
+            ViewHolder(ItemModuleBinding binding) {
+                super(binding.getRoot());
+                this.binding = binding;
+            }
         }
     }
 }
