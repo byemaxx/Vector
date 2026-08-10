@@ -8,6 +8,9 @@
 #include <sys/system_properties.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <vector>
+
 #include <zygisk.hpp>
 
 #include "ipc_bridge.h"
@@ -111,24 +114,28 @@ private:
      */
     void SetAllowUnload(bool unload);
 
+    /**
+     * @brief Creates LSPlant configuration while recording every native ART inline hook that
+     * LSPlant successfully installs in this process.
+     */
+    lsplant::InitInfo MakeArtHookInitInfo();
+
+    /**
+     * @brief Restores the original libart.so code for LSPlant's recorded native hooks.
+     *
+     * Hooks are restored in reverse installation order. DobbyDestroy restores the original code
+     * while retaining the relocation entry/trampoline, so existing LSPlant backup pointers remain
+     * callable even after the target prologue has been restored.
+     */
+    bool RestoreArtInlineHooks();
+
     zygisk::Api *api_ = nullptr;
     JNIEnv *env_ = nullptr;
 
-    // --- ART Hooker Configuration ---
-    const lsplant::InitInfo init_info_{
-        .inline_hooker =
-            [](auto target, auto replace) {
-                void *backup = nullptr;
-                return HookInline(target, replace, &backup) == 0 ? backup : nullptr;
-            },
-        .inline_unhooker = [](auto target) { return UnhookInline(target) == 0; },
-        .art_symbol_resolver =
-            [](auto symbol) { return ElfSymbolCache::GetArt()->getSymbAddress(symbol); },
-        .art_symbol_prefix_resolver =
-            [](auto symbol) { return ElfSymbolCache::GetArt()->getSymbPrefixFirstAddress(symbol); },
-        .generated_class_name = "Vector_",
-        .generated_source_name = "Dobby",
-    };
+    // Native ART hooks installed through the InitInfo passed specifically to LSPlant. Native module
+    // hooks installed later by InitHooks use a different hook handler and are intentionally excluded.
+    std::vector<void *> art_inline_hook_targets_;
+    bool art_inline_hooks_restored_ = false;
 
     // State managed within the class instance for each forked process.
     bool should_inject_ = false;
@@ -138,6 +145,73 @@ private:
 // =========================================================================================
 // Implementation of VectorModule
 // =========================================================================================
+
+lsplant::InitInfo VectorModule::MakeArtHookInitInfo() {
+    art_inline_hook_targets_.clear();
+    art_inline_hooks_restored_ = false;
+
+    return lsplant::InitInfo{
+        .inline_hooker =
+            [this](auto target, auto replace) -> void * {
+                void *backup = nullptr;
+                if (HookInline(target, replace, &backup) != 0) return nullptr;
+
+                if (std::find(art_inline_hook_targets_.begin(), art_inline_hook_targets_.end(),
+                              target) == art_inline_hook_targets_.end()) {
+                    art_inline_hook_targets_.push_back(target);
+                }
+                return backup;
+            },
+        .inline_unhooker =
+            [this](auto target) {
+                if (UnhookInline(target) != 0) return false;
+                art_inline_hook_targets_.erase(
+                    std::remove(art_inline_hook_targets_.begin(), art_inline_hook_targets_.end(),
+                                target),
+                    art_inline_hook_targets_.end());
+                return true;
+            },
+        .art_symbol_resolver =
+            [](auto symbol) { return ElfSymbolCache::GetArt()->getSymbAddress(symbol); },
+        .art_symbol_prefix_resolver =
+            [](auto symbol) { return ElfSymbolCache::GetArt()->getSymbPrefixFirstAddress(symbol); },
+        .generated_class_name = "Vector_",
+        .generated_source_name = "Dobby",
+    };
+}
+
+bool VectorModule::RestoreArtInlineHooks() {
+    if (art_inline_hooks_restored_) return true;
+
+    const size_t total = art_inline_hook_targets_.size();
+    if (total == 0) {
+        art_inline_hooks_restored_ = true;
+        LOGD("No LSPlant ART inline hooks need restoring.");
+        return true;
+    }
+
+    std::vector<void *> failed;
+    failed.reserve(total);
+    for (auto it = art_inline_hook_targets_.rbegin(); it != art_inline_hook_targets_.rend(); ++it) {
+        if (UnhookInline(*it) != 0) {
+            LOGW("Failed to restore LSPlant ART inline hook at {}.", *it);
+            failed.push_back(*it);
+        }
+    }
+
+    std::reverse(failed.begin(), failed.end());
+    art_inline_hook_targets_ = std::move(failed);
+    art_inline_hooks_restored_ = art_inline_hook_targets_.empty();
+
+    const size_t restored = total - art_inline_hook_targets_.size();
+    if (art_inline_hooks_restored_) {
+        LOGI("Restored all {} LSPlant ART inline hooks in libart.so.", restored);
+    } else {
+        LOGW("Restored {} of {} LSPlant ART inline hooks; {} remain active.", restored, total,
+             art_inline_hook_targets_.size());
+    }
+    return art_inline_hooks_restored_;
+}
 
 void VectorModule::LoadDex(JNIEnv *env, PreloadedDex &&dex) {
     LOGV("Loading framework DEX into memory (size: {}).", dex.size());
@@ -253,7 +327,7 @@ void VectorModule::preAppSpecialize(zygisk::AppSpecializeArgs *args) {
                 return;
             }
 
-            jint *gids_array = env_->GetIntArrayElements(args->gids, nullptr);
+            jint *gids_array = env_->GetArrayElements(args->gids, nullptr);
             env_->SetIntArrayRegion(new_gids, 0, original_gids_count, gids_array);
             env_->ReleaseIntArrayElements(args->gids, gids_array, JNI_ABORT);
 
@@ -320,6 +394,12 @@ void VectorModule::postAppSpecialize(const zygisk::AppSpecializeArgs *args) {
         return;
     }
 
+    const bool restore_art_inline_hooks =
+        !is_manager_app_ && ipc_bridge.ShouldRestoreArtInlineHooks(env_, binder.get());
+    if (restore_art_inline_hooks) {
+        LOGI("ART inline hook restore compatibility mode enabled for '{}'.", nice_name_str.get());
+    }
+
     // Fetch resources from the manager service.
     auto [dex_fd, dex_size] = ipc_bridge.FetchFrameworkDex(env_, binder.get());
     if (dex_fd < 0) {
@@ -337,8 +417,10 @@ void VectorModule::postAppSpecialize(const zygisk::AppSpecializeArgs *args) {
     }
     close(dex_fd);  // The FD is duplicated by mmap, we can close it now.
 
-    // Initialize ART hooks via the native library.
-    this->InitArtHooker(env_, init_info_);
+    // Initialize ART hooks via the native library. Only this handler is tracked for later restore;
+    // InitHooks installs independent framework/native-module hooks that must remain active.
+    auto art_hook_init_info = MakeArtHookInitInfo();
+    this->InitArtHooker(env_, art_hook_init_info);
     // Initialize JNI hooks via the native library.
     this->InitHooks(env_);
     // Find the Java entrypoint.
@@ -351,6 +433,12 @@ void VectorModule::postAppSpecialize(const zygisk::AppSpecializeArgs *args) {
 
     if (entered) {
         LOGV("Injected Vector framework into '{}'.", nice_name_str.get());
+        // Match LSPosed's compatibility principle: install the normal Java/Xposed hooks first, then
+        // restore only LSPlant's native libart.so inline patches for explicitly selected apps.
+        if (restore_art_inline_hooks && !RestoreArtInlineHooks()) {
+            LOGW("ART inline hook restore was only partially successful for '{}'.",
+                 nice_name_str.get());
+        }
     } else {
         LOGE("Framework entry failed in '{}'; this process runs without Xposed.",
              nice_name_str.get());
@@ -434,7 +522,10 @@ void VectorModule::postServerSpecialize(const zygisk::ServerSpecializeArgs *args
 
     ipc_bridge.HookBridge(env_);
 
-    this->InitArtHooker(env_, init_info_);
+    // system_server intentionally keeps the full LSPlant ART maintenance hooks. This preserves the
+    // existing Vector-SR soft-restart and late-reinjection recovery path.
+    auto art_hook_init_info = MakeArtHookInitInfo();
+    this->InitArtHooker(env_, art_hook_init_info);
     this->InitHooks(env_);
     this->SetupEntryClass(env_);
 
