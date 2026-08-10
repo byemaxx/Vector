@@ -111,7 +111,11 @@ object PreferenceStore {
 
   fun setRestoreArtInlineHookPackages(packages: Collection<String>) =
       updateModulePref(
-          "lspd", 0, "config", RESTORE_ART_INLINE_HOOKS_KEY, packages.filter { it.isNotBlank() }.toSet())
+          "lspd",
+          0,
+          "config",
+          RESTORE_ART_INLINE_HOOKS_KEY,
+          packages.filter { it.isNotBlank() }.toSet())
 
   /**
    * Resolves the configured package list against the actual process topology for this user.
@@ -126,7 +130,9 @@ object PreferenceStore {
       val info =
           packageManager?.getPackageInfoWithComponents(packageName, MATCH_ALL_FLAGS, userId)
               ?: return@any false
-      info.applicationInfo?.uid == uid && processName in info.fetchProcesses()
+      val applicationInfo = info.applicationInfo ?: return@any false
+      applicationInfo.uid == uid &&
+          (processName == applicationInfo.processName || processName in info.fetchProcesses())
     }
   }
 }
