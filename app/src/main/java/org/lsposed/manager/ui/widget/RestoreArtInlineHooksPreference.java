@@ -88,7 +88,7 @@ public class RestoreArtInlineHooksPreference extends MultiSelectListPreference {
         CharSequence[] entries = new CharSequence[packages.size()];
         CharSequence[] values = new CharSequence[packages.size()];
         for (int i = 0; i < packages.size(); i++) {
-            var item = packages.get(i);
+            Map.Entry<String, String> item = packages.get(i);
             entries[i] = item.getValue() + " (" + item.getKey() + ")";
             values[i] = item.getKey();
         }
@@ -105,13 +105,14 @@ public class RestoreArtInlineHooksPreference extends MultiSelectListPreference {
     }
 
     private boolean saveSelection(Object newValue) {
-        if (!(newValue instanceof Set<?> selected)) return false;
+        if (!(newValue instanceof Set<?>)) return false;
+        Set<?> selected = (Set<?>) newValue;
         var service = LSPManagerServiceHolder.getService();
         if (service == null) return false;
 
         List<String> packages = new ArrayList<>(selected.size());
         for (Object value : selected) {
-            if (value instanceof String packageName) packages.add(packageName);
+            if (value instanceof String) packages.add((String) value);
         }
 
         try {
