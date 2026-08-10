@@ -51,9 +51,16 @@ bool ReadFullyAt(int fd, void *buffer, size_t size, off_t offset) {
     auto *out = static_cast<unsigned char *>(buffer);
     size_t done = 0;
     while (done < size) {
-        const ssize_t count = pread(fd, out + done, size - done, offset + done);
+        const ssize_t count =
+            pread(fd, out + done, size - done, offset + static_cast<off_t>(done));
         if (count < 0 && errno == EINTR) continue;
-        if (count <= 0) return false;
+        if (count < 0) return false;
+        if (count == 0) {
+            // A PT_LOAD file range ending before p_filesz indicates a truncated/replaced backing
+            // image. Report a deterministic I/O failure rather than whatever errno happened to be.
+            errno = EIO;
+            return false;
+        }
         done += static_cast<size_t>(count);
     }
     return true;
@@ -115,10 +122,21 @@ int RestoreLibraryCallback(dl_phdr_info *info, size_t, void *opaque) {
         }
 
         const uintptr_t protection_begin = segment_begin - (segment_begin % page_size);
-        const uintptr_t protection_end =
-            ((segment_end + page_size - 1) / page_size) * page_size;
-        if (protection_end < segment_end || protection_end < protection_begin) {
-            LOGE("Executable segment protection range overflow while cleaning {}.", info->dlpi_name);
+        const uintptr_t end_remainder = segment_end % page_size;
+        uintptr_t protection_end = segment_end;
+        if (end_remainder != 0) {
+            const uintptr_t padding = page_size - end_remainder;
+            protection_end = segment_end + padding;
+            if (protection_end < segment_end) {
+                LOGE("Executable segment protection range overflow while cleaning {}.",
+                     info->dlpi_name);
+                state->success = false;
+                continue;
+            }
+        }
+        if (protection_end < protection_begin) {
+            LOGE("Executable segment protection range is invalid while cleaning {}.",
+                 info->dlpi_name);
             state->success = false;
             continue;
         }
