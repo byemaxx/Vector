@@ -1,18 +1,19 @@
 #include "core/art_inline_hook_cleanup.h"
 
-#include <fcntl.h>
-#include <link.h>
+#include <dlfcn.h>
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
-#include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <string>
 #include <vector>
 
+#include "Interceptor.h"
 #include "common/logging.h"
+#include "core/native_api.h"
 
 namespace vector::native {
 namespace {
@@ -22,160 +23,161 @@ std::vector<void *> g_art_inline_hook_targets;
 bool g_art_cleanup_enabled = false;
 bool g_art_cleanup_completed = false;
 
-struct LibArtRestoreResult {
-    bool found = false;
-    bool success = false;
-    size_t executable_segments = 0;
-    size_t modified_pages = 0;
-    size_t restored_bytes = 0;
+struct MappingInfo {
+    uintptr_t start = 0;
+    uintptr_t end = 0;
+    bool readable = false;
+    bool writable = false;
+    bool executable = false;
+    bool private_mapping = false;
+    std::string path;
 };
 
-bool IsLibArtPath(const char *path) {
-    if (!path || *path == '\0') return false;
-    const char *name = std::strrchr(path, '/');
-    name = name ? name + 1 : path;
-    return std::strcmp(name, "libart.so") == 0;
+uintptr_t PageForAddress(uintptr_t address, size_t page_size) {
+    return address - (address % page_size);
 }
 
-int ProtectionFromFlags(ElfW(Word) flags) {
-    int protection = 0;
-    if ((flags & PF_R) != 0) protection |= PROT_READ;
-    if ((flags & PF_W) != 0) protection |= PROT_WRITE;
-    if ((flags & PF_X) != 0) protection |= PROT_EXEC;
-    return protection;
+void TrimMappingPath(std::string &path) {
+    while (!path.empty() &&
+           (path.front() == ' ' || path.front() == '\t')) {
+        path.erase(path.begin());
+    }
+    while (!path.empty() &&
+           (path.back() == '\n' || path.back() == '\r' || path.back() == ' ' ||
+            path.back() == '\t')) {
+        path.pop_back();
+    }
 }
 
-bool RestoreExecutableSegments(const dl_phdr_info *info, LibArtRestoreResult &result) {
-    const char *path = info->dlpi_name;
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) {
-        PLOGE("Failed to open libart backing file '{}'", path);
+bool FindMappingForAddress(uintptr_t address, MappingInfo &result) {
+    FILE *maps = std::fopen("/proc/self/maps", "r");
+    if (!maps) {
+        PLOGE("Failed to open /proc/self/maps while cleaning ART inline hooks");
         return false;
     }
 
-    struct stat file_stat {};
-    if (fstat(fd, &file_stat) != 0 || file_stat.st_size <= 0) {
-        PLOGE("Failed to stat libart backing file '{}'", path);
-        close(fd);
-        return false;
-    }
+    char line[4096];
+    bool found = false;
+    while (std::fgets(line, sizeof(line), maps)) {
+        unsigned long long start = 0;
+        unsigned long long end = 0;
+        unsigned long long offset = 0;
+        unsigned long long inode = 0;
+        char permissions[5] = {};
+        char device[32] = {};
+        int consumed = 0;
 
-    const size_t file_size = static_cast<size_t>(file_stat.st_size);
-    void *file_map = mmap(nullptr, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd);
-    if (file_map == MAP_FAILED) {
-        PLOGE("Failed to map libart backing file '{}'", path);
-        return false;
-    }
-
-    const long page_size_value = sysconf(_SC_PAGESIZE);
-    if (page_size_value <= 0) {
-        LOGE("Failed to determine page size while invalidating libart.so");
-        munmap(file_map, file_size);
-        return false;
-    }
-    const size_t page_size = static_cast<size_t>(page_size_value);
-    const uintptr_t page_mask = static_cast<uintptr_t>(page_size - 1);
-
-    bool success = true;
-    const auto *clean_file = static_cast<const uint8_t *>(file_map);
-
-    for (ElfW(Half) i = 0; i < info->dlpi_phnum; ++i) {
-        const ElfW(Phdr) &phdr = info->dlpi_phdr[i];
-        if (phdr.p_type != PT_LOAD || (phdr.p_flags & PF_X) == 0 || phdr.p_filesz == 0) {
+        if (std::sscanf(line, "%llx-%llx %4s %llx %31s %llu %n", &start, &end,
+                        permissions, &offset, device, &inode, &consumed) < 6) {
             continue;
         }
 
-        ++result.executable_segments;
+        if (address < start || address >= end) continue;
 
-        const size_t file_offset = static_cast<size_t>(phdr.p_offset);
-        const size_t segment_size = static_cast<size_t>(phdr.p_filesz);
-        if (file_offset > file_size || segment_size > file_size - file_offset) {
-            LOGE("Executable libart segment {} exceeds backing file bounds", i);
-            success = false;
-            continue;
+        result.start = static_cast<uintptr_t>(start);
+        result.end = static_cast<uintptr_t>(end);
+        result.readable = permissions[0] == 'r';
+        result.writable = permissions[1] == 'w';
+        result.executable = permissions[2] == 'x';
+        result.private_mapping = permissions[3] == 'p';
+        if (consumed > 0 && static_cast<size_t>(consumed) < sizeof(line)) {
+            result.path.assign(line + consumed);
+            TrimMappingPath(result.path);
+        }
+        found = true;
+        break;
+    }
+
+    std::fclose(maps);
+    return found;
+}
+
+bool IsDisposableDobbyMapping(const MappingInfo &mapping) {
+    // Dobby's relocated-code arena is a private anonymous RX mapping after DobbyCodePatch returns.
+    if (!mapping.readable || mapping.writable || !mapping.executable || !mapping.private_mapping) {
+        return false;
+    }
+
+    if (mapping.path.empty()) return true;
+
+    // Some Android builds may name anonymous VMAs. Permit only anonymous labels and explicitly
+    // reject ART/JIT/ashmem-style mappings so LSPlant Java trampolines can never be neutralized here.
+    if (mapping.path.rfind("[anon:", 0) != 0) return false;
+    if (mapping.path.find("dalvik") != std::string::npos ||
+        mapping.path.find("jit") != std::string::npos ||
+        mapping.path.find("ashmem") != std::string::npos) {
+        return false;
+    }
+    return true;
+}
+
+bool IsTrackedTarget(uintptr_t address) {
+    const auto *target = reinterpret_cast<void *>(address);
+    return std::find(g_art_inline_hook_targets.begin(), g_art_inline_hook_targets.end(), target) !=
+           g_art_inline_hook_targets.end();
+}
+
+bool CollectAndValidateRelocatedPages(size_t page_size, std::vector<uintptr_t> &pages) {
+    auto *interceptor = Interceptor::SharedInstance();
+    if (!interceptor) {
+        LOGE("Dobby interceptor is unavailable while cleaning ART inline hooks.");
+        return false;
+    }
+
+    for (void *target : g_art_inline_hook_targets) {
+        auto *entry = interceptor->find(reinterpret_cast<addr_t>(target));
+        if (!entry || entry->type != kFunctionInlineHook || entry->relocated_addr == 0) {
+            LOGE("Tracked ART inline hook at {} has no live Dobby relocated entry.", target);
+            return false;
         }
 
-        const uintptr_t segment_start =
-            static_cast<uintptr_t>(info->dlpi_addr) + static_cast<uintptr_t>(phdr.p_vaddr);
-        if (segment_size > UINTPTR_MAX - segment_start) {
-            LOGE("Executable libart segment {} address range overflows", i);
-            success = false;
-            continue;
-        }
-        const uintptr_t segment_end = segment_start + segment_size;
-        const auto *clean_segment = clean_file + file_offset;
-        const int original_protection = ProtectionFromFlags(phdr.p_flags);
-        const int writable_protection = original_protection | PROT_READ | PROT_WRITE;
-
-        // Rewrite only pages whose file-backed bytes actually differ. This achieves the same final
-        // executable image as copying the whole PT_LOAD segment while minimizing the time ART code
-        // pages are writable and avoiding writes to already-clean pages.
-        uintptr_t page_start = segment_start & ~page_mask;
-        while (page_start < segment_end) {
-            const uintptr_t next_page = page_start + page_size;
-            if (next_page < page_start) {
-                LOGE("Page range overflow while invalidating libart.so");
-                success = false;
-                break;
-            }
-
-            const uintptr_t copy_start = std::max(page_start, segment_start);
-            const uintptr_t copy_end = std::min(next_page, segment_end);
-            const size_t copy_size = static_cast<size_t>(copy_end - copy_start);
-            const size_t segment_offset = static_cast<size_t>(copy_start - segment_start);
-            auto *live = reinterpret_cast<uint8_t *>(copy_start);
-            const auto *clean = clean_segment + segment_offset;
-
-            if (std::memcmp(live, clean, copy_size) != 0) {
-                if (mprotect(reinterpret_cast<void *>(page_start), page_size,
-                             writable_protection) != 0) {
-                    PLOGE("Failed to make modified libart page at {} writable",
-                          reinterpret_cast<void *>(page_start));
-                    success = false;
-                    page_start = next_page;
-                    continue;
-                }
-
-                std::memcpy(live, clean, copy_size);
-                __builtin___clear_cache(reinterpret_cast<char *>(live),
-                                        reinterpret_cast<char *>(live + copy_size));
-
-                if (mprotect(reinterpret_cast<void *>(page_start), page_size,
-                             original_protection) != 0) {
-                    PLOGE("Failed to restore protection for libart page at {}",
-                          reinterpret_cast<void *>(page_start));
-                    success = false;
-                }
-
-                ++result.modified_pages;
-                result.restored_bytes += copy_size;
-            }
-
-            page_start = next_page;
+        const uintptr_t page = PageForAddress(entry->relocated_addr, page_size);
+        if (std::find(pages.begin(), pages.end(), page) == pages.end()) {
+            pages.push_back(page);
         }
     }
 
-    munmap(file_map, file_size);
-    return success && result.executable_segments > 0;
-}
+    for (uintptr_t page : pages) {
+        MappingInfo mapping;
+        if (!FindMappingForAddress(page, mapping)) {
+            LOGE("Unable to resolve Dobby relocated-code mapping at {}.",
+                 reinterpret_cast<void *>(page));
+            return false;
+        }
 
-int RestoreLibArtCallback(dl_phdr_info *info, size_t, void *data) {
-    if (!IsLibArtPath(info->dlpi_name)) return 0;
+        if (page > UINTPTR_MAX - page_size || page < mapping.start ||
+            page + page_size > mapping.end || !IsDisposableDobbyMapping(mapping)) {
+            LOGE("Refusing to neutralize relocated page {}: mapping [{}-{}] '{}' is not a "
+                 "private anonymous RX Dobby arena.",
+                 reinterpret_cast<void *>(page), reinterpret_cast<void *>(mapping.start),
+                 reinterpret_cast<void *>(mapping.end),
+                 mapping.path.empty() ? "<anonymous>" : mapping.path.c_str());
+            return false;
+        }
 
-    auto &result = *static_cast<LibArtRestoreResult *>(data);
-    result.found = true;
-    result.success = RestoreExecutableSegments(info, result);
-    return 1;  // libart.so is unique in an app process; stop after handling it.
-}
+        Dl_info dl_info{};
+        if (dladdr(reinterpret_cast<void *>(page), &dl_info) != 0) {
+            LOGE("Refusing to neutralize relocated page {} because dladdr resolves it to '{}'.",
+                 reinterpret_cast<void *>(page), dl_info.dli_fname ? dl_info.dli_fname : "<unknown>");
+            return false;
+        }
 
-LibArtRestoreResult RestoreLibArtExecutableBytes() {
-    LibArtRestoreResult result;
-    dl_iterate_phdr(RestoreLibArtCallback, &result);
-    if (!result.found) {
-        LOGE("Unable to locate loaded libart.so for executable-byte invalidation");
+        // A Dobby arena can serve more than one hook. Never neutralize a page while an unrelated
+        // active interceptor entry still relies on relocated code from that same page.
+        for (int i = 0; i < interceptor->count(); ++i) {
+            const auto *entry = interceptor->getEntry(i);
+            if (!entry || entry->relocated_addr == 0) continue;
+            if (PageForAddress(entry->relocated_addr, page_size) != page) continue;
+            if (IsTrackedTarget(entry->patched_addr)) continue;
+
+            LOGE("Refusing to neutralize relocated page {} because unrelated Dobby hook {} shares "
+                 "the arena.",
+                 reinterpret_cast<void *>(page), reinterpret_cast<void *>(entry->patched_addr));
+            return false;
+        }
     }
-    return result;
+
+    return !pages.empty();
 }
 
 }  // namespace
@@ -212,34 +214,83 @@ bool CleanupArtInlineHooksIfEnabled() {
     std::lock_guard<std::mutex> lock(g_art_cleanup_mutex);
     if (!g_art_cleanup_enabled || g_art_cleanup_completed) return true;
 
-    const size_t tracked_targets = g_art_inline_hook_targets.size();
-    LOGI("Running deferred libart.so executable-byte invalidation after initial package lifecycle "
-         "callbacks ({} tracked LSPlant target(s)).",
-         tracked_targets);
-
-    // Deliberately do not call DobbyDestroy/UnhookInline here. LSPosed-style invalidation is a
-    // compatibility operation, not normal hook teardown: restore libart.so's file-backed executable
-    // image while leaving LSPlant/Dobby trampoline and interceptor metadata intact. Apps opting into
-    // this mode accept that ART maintenance hooks no longer execute afterwards.
-    const LibArtRestoreResult result = RestoreLibArtExecutableBytes();
-    if (!result.success) {
-        LOGW("Deferred libart.so executable-byte invalidation failed; cleanup remains armed for a "
-             "later retry.");
+    if (g_art_inline_hook_targets.empty()) {
+        LOGW("ART inline-hook cleanup was requested but no LSPlant Dobby targets were tracked.");
         return false;
     }
 
-    g_art_inline_hook_targets.clear();
-    g_art_cleanup_completed = true;
-    g_art_cleanup_enabled = false;
-
-    if (result.modified_pages == 0) {
-        LOGI("libart.so executable segments already match the backing file ({} segment(s) checked).",
-             result.executable_segments);
-    } else {
-        LOGI("Restored libart.so executable bytes from backing file: {} modified page(s), {} byte(s) "
-             "rewritten across {} executable segment(s).",
-             result.modified_pages, result.restored_bytes, result.executable_segments);
+    const long page_size_value = sysconf(_SC_PAGESIZE);
+    if (page_size_value <= 0) {
+        LOGE("Failed to determine page size while cleaning ART inline hooks.");
+        return false;
     }
+    const size_t page_size = static_cast<size_t>(page_size_value);
+
+    std::vector<uintptr_t> relocated_pages;
+    relocated_pages.reserve(g_art_inline_hook_targets.size());
+    if (!CollectAndValidateRelocatedPages(page_size, relocated_pages)) {
+        LOGW("ART inline-hook cleanup aborted before teardown because the Dobby relocated-code "
+             "arena could not be isolated safely.");
+        return false;
+    }
+
+    const size_t tracked_count = g_art_inline_hook_targets.size();
+    LOGI("Running deferred ART inline-hook cleanup for {} tracked LSPlant Dobby hook(s) across {} "
+         "relocated-code page(s).",
+         tracked_count, relocated_pages.size());
+
+    bool unhook_success = true;
+    for (auto it = g_art_inline_hook_targets.rbegin(); it != g_art_inline_hook_targets.rend(); ++it) {
+        if (UnhookInline(*it) != 0) {
+            LOGE("Failed to destroy tracked LSPlant Dobby hook at {}.", *it);
+            unhook_success = false;
+        }
+    }
+
+    if (!unhook_success) {
+        // Some Dobby entries may already have been removed. Do not touch their shared allocator
+        // pages after a partial teardown, and do not retry with stale target bookkeeping.
+        g_art_inline_hook_targets.clear();
+        g_art_cleanup_enabled = false;
+        g_art_cleanup_completed = true;
+        LOGW("ART inline-hook cleanup stopped after a partial Dobby teardown; relocated pages were "
+             "left mapped.");
+        return false;
+    }
+
+    bool neutralize_success = true;
+    size_t neutralized_pages = 0;
+    for (uintptr_t page : relocated_pages) {
+        void *page_address = reinterpret_cast<void *>(page);
+
+        // Discard stale relocated instructions first. The mapping itself is deliberately retained:
+        // Dobby's allocator keeps process-lifetime arena metadata and may reuse this page later.
+        if (madvise(page_address, page_size, MADV_DONTNEED) != 0) {
+            PLOGE("Failed to discard stale Dobby relocated code at {}", page_address);
+        }
+
+        if (mprotect(page_address, page_size, PROT_NONE) != 0) {
+            PLOGE("Failed to make Dobby relocated-code page {} inaccessible", page_address);
+            neutralize_success = false;
+            continue;
+        }
+        ++neutralized_pages;
+    }
+
+    g_art_inline_hook_targets.clear();
+    g_art_cleanup_enabled = false;
+    g_art_cleanup_completed = true;
+
+    if (!neutralize_success) {
+        LOGW("Destroyed all {} tracked LSPlant Dobby hooks, but neutralized only {}/{} relocated "
+             "page(s).",
+             tracked_count, neutralized_pages, relocated_pages.size());
+        return false;
+    }
+
+    LOGI("Destroyed all {} tracked LSPlant Dobby hooks and neutralized {} relocated-code page(s); "
+         "LSPlant Java-hook trampolines were left intact.",
+         tracked_count, neutralized_pages);
     return true;
 }
 
