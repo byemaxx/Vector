@@ -54,7 +54,7 @@ public class RestoreArtInlineHooksPreference extends MultiSelectListPreference {
     }
 
     @Override
-    protected void onAttached() {
+    public void onAttached() {
         super.onAttached();
         setPersistent(false);
         refreshEntries();
