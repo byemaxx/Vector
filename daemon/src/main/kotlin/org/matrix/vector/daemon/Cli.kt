@@ -187,10 +187,14 @@ object OutputFormatter {
 }
 
 // --- CLI Commands (picocli) ---
+class CliVersionProvider : IVersionProvider {
+  override fun getVersion(): Array<String> = arrayOf("Vector CLI ${BuildConfig.VERSION_NAME}")
+}
+
 @Command(
     name = "vector-cli",
     mixinStandardHelpOptions = true,
-    version = ["Vector CLI ${BuildConfig.VERSION_NAME}"],
+    versionProvider = CliVersionProvider::class,
     description = ["A fast, scriptable CLI for configuring the Vector Framework daemon."],
     subcommands =
         [
