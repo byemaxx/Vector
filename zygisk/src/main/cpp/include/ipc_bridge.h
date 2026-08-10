@@ -82,6 +82,12 @@ public:
     std::map<std::string, std::string> FetchObfuscationMap(JNIEnv *env, jobject binder);
 
     /**
+     * @brief Queries whether this registered application process should restore LSPlant's
+     * native ART inline hooks after framework initialization.
+     */
+    bool ShouldRestoreArtInlineHooks(JNIEnv *env, jobject binder);
+
+    /**
      * @brief Sets up the JNI hook to intercept Binder transactions.
      *
      * This is the core of the IPC interception mechanism.

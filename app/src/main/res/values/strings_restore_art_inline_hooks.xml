@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_restore_art_inline_hooks">Disable ART inline hooks</string>
+    <string name="settings_restore_art_inline_hooks_summary">Disable Vector\'s ART inline hooks in selected apps to improve compatibility. Some modules may stop working, and apps may malfunction or crash. Changes apply the next time the app starts.</string>
+    <string name="search_apps">Search apps</string>
+</resources>

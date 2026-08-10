@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_restore_art_inline_hooks">停用 ART 内联 Hook</string>
+    <string name="settings_restore_art_inline_hooks_summary">为选中的应用停用 Vector 的 ART 内联 Hook，以改善兼容性。部分模块可能失效，应用也可能异常或崩溃。更改将在应用下次启动时生效。</string>
+    <string name="search_apps">搜索应用</string>
+</resources>

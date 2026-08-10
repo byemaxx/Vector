@@ -446,9 +446,21 @@ object ParasiticManagerHooker {
     fun start(): Boolean {
         val binderList = mutableListOf<IBinder>()
         return try {
-            VectorServiceClient.requestInjectedManagerBinder(binderList)!!.use { pfd ->
+            val managerApk =
+                VectorServiceClient.requestInjectedManagerBinder(binderList)
+                    ?: throw IllegalStateException(
+                        "Manager service did not return the manager APK file descriptor"
+                    )
+            val managerBinder =
+                binderList.firstOrNull()
+                    ?: throw IllegalStateException(
+                        "Manager service did not return the manager Binder"
+                    )
+            managerApk.use { pfd ->
                 managerFd = pfd.detachFd()
-                val managerService = ILSPManagerService.Stub.asInterface(binderList[0])
+                val managerService =
+                    ILSPManagerService.Stub.asInterface(managerBinder)
+                        ?: throw IllegalStateException("Returned manager Binder is invalid")
                 hookForManager(managerService)
                 Utils.logD("Vector manager injected successfully into process.")
                 true
