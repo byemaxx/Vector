@@ -17,9 +17,9 @@ void ForgetArtInlineHookTarget(void *target);
 /**
  * Run the one-shot compatibility cleanup after the initial package lifecycle callbacks finish.
  *
- * Tracked Dobby hooks are unregistered first, then libart.so executable PT_LOAD bytes are checked
- * against the backing file and restored when they still differ. Disabled/already-cleaned states are
- * successful no-ops.
+ * Only native libart.so hooks that were installed through LSPlant's tracked InitInfo handler are
+ * removed. No unrelated executable pages are rewritten from disk. Disabled/already-cleaned states
+ * are successful no-ops.
  */
 bool CleanupArtInlineHooksIfEnabled();
 
