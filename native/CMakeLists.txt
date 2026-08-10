@@ -33,8 +33,15 @@ set(IGNORED_WARNINGS
 target_include_directories(${PROJECT_NAME} PUBLIC include)
 
 # Add the 'src' directory and external XZ library includes as PRIVATE.
-# These are only needed to build vector_native itself.
-target_include_directories(${PROJECT_NAME} PRIVATE src ${VECTOR_ROOT}/external/xz-embedded/linux/include)
+# The Dobby private headers are intentionally visible only to vector_native: the per-app
+# compatibility cleanup needs to inspect the pinned Dobby interceptor entry so it can identify
+# the exact relocated-code page before normal DobbyDestroy teardown.
+target_include_directories(${PROJECT_NAME} PRIVATE
+    src
+    ${VECTOR_ROOT}/external/xz-embedded/linux/include
+    ${VECTOR_ROOT}/external/dobby/source
+    ${VECTOR_ROOT}/external/dobby/external
+)
 
 # --- Compiler Options ---
 # Apply the standard pedantic warnings and the ignored warnings list.
