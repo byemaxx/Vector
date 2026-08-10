@@ -11,6 +11,7 @@ import org.lsposed.lspd.util.Utils
 import org.matrix.vector.impl.VectorLifecycleManager
 import org.matrix.vector.impl.di.LegacyPackageInfo
 import org.matrix.vector.impl.di.VectorBootstrap
+import org.matrix.vector.nativebridge.NativeAPI
 
 /** Safe reflection helper */
 private inline fun <reified T> Any.getFieldValue(name: String): T? {
@@ -158,6 +159,7 @@ object LoadedApkCreateCLHooker : XposedInterface.Hooker {
         val isInitialLoad =
             chain.args.firstOrNull() == null && LoadedApkTracker.activeApks.contains(loadedApk)
         val result = chain.proceed()
+        var cleanupArtInlineHooksAfterInitialLoad = false
 
         try {
             val apkPackageName = loadedApk.getFieldValue<String>("mPackageName") ?: return result
@@ -168,6 +170,10 @@ object LoadedApkCreateCLHooker : XposedInterface.Hooker {
                 loadedApk.getFieldValue<ClassLoader>("mDefaultClassLoader") ?: classLoader
 
             val ctx = PackageContextHelper.resolve(loadedApk, apkPackageName)
+            // Invalidate only after every initial-package callback below has returned. This is
+            // intentionally later than native forkCommon(): modern/API102 modules can install their
+            // real application hooks from onPackageReady, after the framework bootstrap returned.
+            cleanupArtInlineHooksAfterInitialLoad = isInitialLoad && ctx.isFirstPackage
 
             // Dispatch Modern Lifecycle: onPackageReady
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -202,6 +208,15 @@ object LoadedApkCreateCLHooker : XposedInterface.Hooker {
         } catch (t: Throwable) {
             Utils.logE("LoadedApkCreateCLHooker failed in post-proceed phase", t)
         } finally {
+            if (cleanupArtInlineHooksAfterInitialLoad) {
+                runCatching {
+                        check(NativeAPI.cleanupArtInlineHooks()) {
+                            "native ART inline-hook cleanup reported failure"
+                        }
+                    }
+                    .onFailure { Utils.logE("Deferred ART inline-hook cleanup failed", it) }
+            }
+
             // Cleanup: Once the initial load is done, we remove it from activeApks.
             // Subsequent calls (Split APKs) will now be recognized as non-initial loads.
             LoadedApkTracker.activeApks.remove(loadedApk)
