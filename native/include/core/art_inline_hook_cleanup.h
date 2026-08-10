@@ -15,11 +15,12 @@ void RecordArtInlineHookTarget(void *target);
 void ForgetArtInlineHookTarget(void *target);
 
 /**
- * Run the one-shot compatibility cleanup after the initial package lifecycle callbacks finish.
+ * Run the one-shot compatibility invalidation after the initial package lifecycle callbacks finish.
  *
- * Only native libart.so hooks that were installed through LSPlant's tracked InitInfo handler are
- * removed. No unrelated executable pages are rewritten from disk. Disabled/already-cleaned states
- * are successful no-ops.
+ * For opted-in apps, restore file-backed executable libart.so bytes from the loaded library's
+ * backing file. This intentionally does not perform normal Dobby hook teardown, so LSPlant/Dobby
+ * trampoline and interceptor metadata remain intact while the patched libart entry code is removed.
+ * Disabled/already-cleaned states are successful no-ops.
  */
 bool CleanupArtInlineHooksIfEnabled();
 
