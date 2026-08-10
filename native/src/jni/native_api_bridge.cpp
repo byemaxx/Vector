@@ -1,3 +1,4 @@
+#include "core/art_inline_hook_cleanup.h"
 #include "core/native_api.h"
 #include "jni/jni_bridge.h"
 #include "jni/jni_hooks.h"
@@ -8,8 +9,13 @@ VECTOR_DEF_NATIVE_METHOD(void, NativeAPI, recordNativeEntrypoint, jstring jstr) 
     vector::native::RegisterNativeLib(str);
 }
 
+VECTOR_DEF_NATIVE_METHOD(jboolean, NativeAPI, cleanupArtInlineHooks) {
+    return vector::native::CleanupArtInlineHooksIfEnabled() ? JNI_TRUE : JNI_FALSE;
+}
+
 static JNINativeMethod gMethods[] = {
-    VECTOR_NATIVE_METHOD(NativeAPI, recordNativeEntrypoint, "(Ljava/lang/String;)V")};
+    VECTOR_NATIVE_METHOD(NativeAPI, recordNativeEntrypoint, "(Ljava/lang/String;)V"),
+    VECTOR_NATIVE_METHOD(NativeAPI, cleanupArtInlineHooks, "()Z")};
 
 void RegisterNativeApiBridge(JNIEnv *env) { REGISTER_VECTOR_NATIVE_METHODS(NativeAPI); }
 
