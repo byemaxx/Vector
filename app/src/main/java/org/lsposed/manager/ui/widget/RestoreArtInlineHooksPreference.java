@@ -20,6 +20,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.preference.MultiSelectListPreference;
 
+import org.lsposed.lspd.ILSPManagerService;
 import org.lsposed.manager.App;
 import org.lsposed.manager.ConfigManager;
 import org.lsposed.manager.receivers.LSPManagerServiceHolder;
@@ -62,7 +63,7 @@ public class RestoreArtInlineHooksPreference extends MultiSelectListPreference {
     }
 
     private void refreshEntries() {
-        var service = LSPManagerServiceHolder.getService();
+        ILSPManagerService service = LSPManagerServiceHolder.getService();
         if (service == null) {
             setEnabled(false);
             return;
@@ -107,7 +108,7 @@ public class RestoreArtInlineHooksPreference extends MultiSelectListPreference {
     private boolean saveSelection(Object newValue) {
         if (!(newValue instanceof Set<?>)) return false;
         Set<?> selected = (Set<?>) newValue;
-        var service = LSPManagerServiceHolder.getService();
+        ILSPManagerService service = LSPManagerServiceHolder.getService();
         if (service == null) return false;
 
         List<String> packages = new ArrayList<>(selected.size());
