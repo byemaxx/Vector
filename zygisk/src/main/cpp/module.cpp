@@ -338,12 +338,16 @@ void VectorModule::postAppSpecialize(const zygisk::AppSpecializeArgs *args) {
         return;
     }
 
-    const bool restore_art_inline_hooks =
+    const bool restore_art_inline_hooks_requested =
         !is_manager_app_ && ipc_bridge.ShouldRestoreArtInlineHooks(env_, binder.get());
-    ConfigureArtInlineHookCleanup(restore_art_inline_hooks);
+    const bool restore_art_inline_hooks =
+        ConfigureArtInlineHookCleanup(restore_art_inline_hooks_requested);
     if (restore_art_inline_hooks) {
         LOGI("ART inline hook cleanup compatibility mode enabled for '{}'; cleanup will run "
              "immediately after framework bootstrap.",
+             nice_name_str.get());
+    } else if (restore_art_inline_hooks_requested) {
+        LOGW("ART inline hook cleanup compatibility mode could not be armed for '{}'.",
              nice_name_str.get());
     }
 
@@ -473,7 +477,7 @@ void VectorModule::postServerSpecialize(const zygisk::ServerSpecializeArgs *args
 
     // system_server intentionally keeps the full LSPlant ART maintenance hooks. This preserves the
     // existing Vector-SR soft-restart and late-reinjection recovery path.
-    ConfigureArtInlineHookCleanup(false);
+    (void)ConfigureArtInlineHookCleanup(false);
     auto art_hook_init_info = MakeArtHookInitInfo();
     this->InitArtHooker(env_, art_hook_init_info);
     this->InitHooks(env_);
