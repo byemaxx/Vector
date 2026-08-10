@@ -1,6 +1,12 @@
 -keep class org.lsposed.manager.Constants {
     public static boolean setBinder(android.os.IBinder);
 }
+
+# Referenced by full class name from prefs.xml.
+-keep class org.lsposed.manager.ui.widget.RestoreArtInlineHooksPreference {
+    public <init>(...);
+}
+
 -assumenosideeffects class kotlin.jvm.internal.Intrinsics {
     public static void check*(...);
     public static void throw*(...);
