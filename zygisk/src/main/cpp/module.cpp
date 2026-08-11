@@ -1,6 +1,6 @@
 #include <common/config.h>
 #include <common/logging.h>
-#include <core/art_inline_hook_cleanup.h>
+#include <core/art_inline_hook_invalidation.h>
 #include <core/context.h>
 #include <core/native_api.h>
 #include <elf/elf_image.h>
@@ -139,13 +139,13 @@ lsplant::InitInfo VectorModule::MakeArtHookInitInfo() {
             [](auto target, auto replace) -> void * {
                 void *backup = nullptr;
                 if (HookInline(target, replace, &backup) != 0) return nullptr;
-                RecordArtInlineHookTarget(target);
+                RecordArtInlineHookInvalidationTarget(target);
                 return backup;
             },
         .inline_unhooker =
             [](auto target) {
                 if (UnhookInline(target) != 0) return false;
-                ForgetArtInlineHookTarget(target);
+                ForgetArtInlineHookInvalidationTarget(target);
                 return true;
             },
         .art_symbol_resolver =
@@ -338,16 +338,16 @@ void VectorModule::postAppSpecialize(const zygisk::AppSpecializeArgs *args) {
         return;
     }
 
-    const bool restore_art_inline_hooks_requested =
-        !is_manager_app_ && ipc_bridge.ShouldRestoreArtInlineHooks(env_, binder.get());
-    const bool restore_art_inline_hooks =
-        ConfigureArtInlineHookCleanup(restore_art_inline_hooks_requested);
-    if (restore_art_inline_hooks) {
-        LOGI("ART inline hook cleanup compatibility mode enabled for '{}'; cleanup will run "
+    const bool invalidate_art_inline_hooks_requested =
+        !is_manager_app_ && ipc_bridge.ShouldInvalidateArtInlineHooks(env_, binder.get());
+    const bool invalidate_art_inline_hooks =
+        ConfigureArtInlineHookInvalidation(invalidate_art_inline_hooks_requested);
+    if (invalidate_art_inline_hooks) {
+        LOGI("ART inline hook invalidation mode enabled for '{}'; invalidation will run "
              "immediately after framework bootstrap.",
              nice_name_str.get());
-    } else if (restore_art_inline_hooks_requested) {
-        LOGW("ART inline hook cleanup compatibility mode could not be armed for '{}'.",
+    } else if (invalidate_art_inline_hooks_requested) {
+        LOGW("ART inline hook invalidation mode could not be armed for '{}'.",
              nice_name_str.get());
     }
 
@@ -386,8 +386,8 @@ void VectorModule::postAppSpecialize(const zygisk::AppSpecializeArgs *args) {
     // libraries can observe or derive state from the temporary LSPlant/Dobby patches. forkCommon
     // has already installed Vector's Java lifecycle hooks, so no later package-ready callback is
     // required merely to bootstrap the framework.
-    if (restore_art_inline_hooks && !CleanupArtInlineHooksIfEnabled()) {
-        LOGW("Early ART inline-hook cleanup failed in '{}'.", nice_name_str.get());
+    if (invalidate_art_inline_hooks && !InvalidateArtInlineHooksIfEnabled()) {
+        LOGW("Early ART inline-hook invalidation failed in '{}'.", nice_name_str.get());
     }
 
     if (entered) {
@@ -477,7 +477,7 @@ void VectorModule::postServerSpecialize(const zygisk::ServerSpecializeArgs *args
 
     // system_server intentionally keeps the full LSPlant ART maintenance hooks. This preserves the
     // existing Vector-SR soft-restart and late-reinjection recovery path.
-    (void)ConfigureArtInlineHookCleanup(false);
+    (void)ConfigureArtInlineHookInvalidation(false);
     auto art_hook_init_info = MakeArtHookInitInfo();
     this->InitArtHooker(env_, art_hook_init_info);
     this->InitHooks(env_);

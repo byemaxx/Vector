@@ -23,6 +23,7 @@ import org.lsposed.lspd.service.IHotReloadTarget
 import org.lsposed.lspd.service.ILSPApplicationService
 import org.matrix.vector.daemon.data.ConfigCache
 import org.matrix.vector.daemon.data.FileSystem
+import org.matrix.vector.daemon.data.InlineHookProcessPolicy
 import org.matrix.vector.daemon.data.ModuleCodeIdentity
 import org.matrix.vector.daemon.data.NativeLibraryStager
 import org.matrix.vector.daemon.data.PreferenceStore
@@ -42,7 +43,7 @@ const val DEX_TRANSACTION_CODE =
     ('_'.code shl 24) or ('D'.code shl 16) or ('E'.code shl 8) or 'X'.code
 const val OBFUSCATION_MAP_TRANSACTION_CODE =
     ('_'.code shl 24) or ('O'.code shl 16) or ('B'.code shl 8) or 'F'.code
-const val RESTORE_ART_INLINE_HOOKS_TRANSACTION_CODE =
+const val INVALIDATE_ART_INLINE_HOOKS_TRANSACTION_CODE =
     ('_'.code shl 24) or ('I'.code shl 16) or ('N'.code shl 8) or 'L'.code
 
 internal class HotReloadUnsupportedException(message: String) : IllegalStateException(message)
@@ -139,13 +140,13 @@ object ApplicationService : ILSPApplicationService.Stub() {
         }
         return true
       }
-      RESTORE_ART_INLINE_HOOKS_TRANSACTION_CODE -> {
+      INVALIDATE_ART_INLINE_HOOKS_TRANSACTION_CODE -> {
         val info = ensureRegistered()
-        val restore =
-            !(info.key.uid == Process.SYSTEM_UID && info.processName == "system") &&
-                PreferenceStore.shouldRestoreArtInlineHooks(info.processName, info.key.uid)
+        val invalidate =
+            InlineHookProcessPolicy.mayInvalidate(info.processName, info.key.uid) &&
+                PreferenceStore.shouldInvalidateArtInlineHooks(info.processName, info.key.uid)
         reply?.writeNoException()
-        reply?.writeInt(if (restore) 1 else 0)
+        reply?.writeInt(if (invalidate) 1 else 0)
         return true
       }
     }

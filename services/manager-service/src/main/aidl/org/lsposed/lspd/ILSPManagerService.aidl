@@ -80,7 +80,7 @@ interface ILSPManagerService {
 
     boolean setAutoInclude(String packageName, boolean enable) = 52;
 
-    List<String> getRestoreArtInlineHookPackages() = 53;
+    List<String> getInvalidateArtInlineHookPackages() = 53;
 
-    boolean setRestoreArtInlineHookPackages(in List<String> packages) = 54;
+    boolean setInvalidateArtInlineHooks(String packageName, boolean enabled) = 54;
 }

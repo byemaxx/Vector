@@ -3,7 +3,7 @@
 }
 
 # Referenced by full class name from prefs.xml.
--keep class org.lsposed.manager.ui.widget.RestoreArtInlineHooksPreference {
+-keep class org.lsposed.manager.ui.widget.InvalidateArtInlineHooksPreference {
     public <init>(...);
 }
 

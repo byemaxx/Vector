@@ -15,7 +15,7 @@
         android:paddingBottom="8dp"
         android:textAppearance="@style/TextAppearance.Material3.TitleLarge"
         android:textColor="?attr/colorOnSurface"
-        tools:text="Invalidate inline hooks" />
+        tools:text="ART inline hook compatibility mode" />
 
     <androidx.appcompat.widget.SearchView
         android:id="@+id/search_view"

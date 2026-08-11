@@ -89,7 +89,7 @@ constexpr auto kBridgeServiceName = "activity"sv;
 constexpr jint kBridgeTransactionCode = ('_' << 24) | ('V' << 16) | ('E' << 8) | 'C';
 constexpr jint kDexTransactionCode = ('_' << 24) | ('D' << 16) | ('E' << 8) | 'X';
 constexpr jint kObfuscationMapTransactionCode = ('_' << 24) | ('O' << 16) | ('B' << 8) | 'F';
-constexpr jint kRestoreArtInlineHooksTransactionCode =
+constexpr jint kInvalidateArtInlineHooksTransactionCode =
     ('_' << 24) | ('I' << 16) | ('N' << 8) | 'L';
 
 // Action codes sent within a kBridgeTransactionCode transaction.
@@ -459,23 +459,23 @@ std::map<std::string, std::string> IPCBridge::FetchObfuscationMap(JNIEnv *env, j
     return result_map;
 }
 
-bool IPCBridge::ShouldRestoreArtInlineHooks(JNIEnv *env, jobject binder) {
+bool IPCBridge::ShouldInvalidateArtInlineHooks(JNIEnv *env, jobject binder) {
     if (!initialized_ || !binder) {
         return false;
     }
 
     ParcelWrapper parcels(env, this);
     bool success = lsplant::JNI_CallBooleanMethod(
-        env, binder, transact_method_, kRestoreArtInlineHooksTransactionCode, parcels.data.get(),
+        env, binder, transact_method_, kInvalidateArtInlineHooksTransactionCode, parcels.data.get(),
         parcels.reply.get(), 0);
     if (!success) {
-        LOGW("ART inline hook restore policy query failed.");
+        LOGW("ART inline hook invalidation policy query failed.");
         return false;
     }
 
     lsplant::JNI_CallVoidMethod(env, parcels.reply.get(), read_exception_method_);
     if (env->ExceptionCheck()) {
-        LOGW("Remote exception while querying ART inline hook restore policy.");
+        LOGW("Remote exception while querying ART inline hook invalidation policy.");
         env->ExceptionClear();
         return false;
     }

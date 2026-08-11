@@ -346,9 +346,9 @@ public class ConfigManager {
         }
     }
 
-    public static Set<String> getRestoreArtInlineHookPackages() {
+    public static Set<String> getInvalidateArtInlineHookPackages() {
         try {
-            var packages = LSPManagerServiceHolder.getService().getRestoreArtInlineHookPackages();
+            var packages = LSPManagerServiceHolder.getService().getInvalidateArtInlineHookPackages();
             return packages == null ? new HashSet<>() : new HashSet<>(packages);
         } catch (RemoteException e) {
             Log.e(App.TAG, Log.getStackTraceString(e));
@@ -356,10 +356,10 @@ public class ConfigManager {
         }
     }
 
-    public static boolean setRestoreArtInlineHookPackages(Set<String> packages) {
+    public static boolean setInvalidateArtInlineHooks(String packageName, boolean enabled) {
         try {
             return LSPManagerServiceHolder.getService()
-                    .setRestoreArtInlineHookPackages(new ArrayList<>(packages));
+                    .setInvalidateArtInlineHooks(packageName, enabled);
         } catch (RemoteException e) {
             Log.e(App.TAG, Log.getStackTraceString(e));
             return false;

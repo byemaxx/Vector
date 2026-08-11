@@ -1,4 +1,4 @@
-#include "core/art_inline_hook_cleanup.h"
+#include "core/art_inline_hook_invalidation.h"
 
 #include <fcntl.h>
 #include <link.h>
@@ -17,10 +17,10 @@
 namespace vector::native {
 namespace {
 
-std::mutex g_art_cleanup_mutex;
+std::mutex g_art_invalidation_mutex;
 std::vector<void *> g_art_inline_hook_targets;
-bool g_art_cleanup_enabled = false;
-bool g_art_cleanup_completed = false;
+bool g_art_invalidation_enabled = false;
+bool g_art_invalidation_completed = false;
 
 struct LibArtRestoreResult {
     bool found = false;
@@ -408,35 +408,35 @@ LibArtRestoreResult RestoreLibArtExecutableBytes() {
 
 }  // namespace
 
-bool ConfigureArtInlineHookCleanup(bool enabled) {
-    std::lock_guard<std::mutex> lock(g_art_cleanup_mutex);
+bool ConfigureArtInlineHookInvalidation(bool enabled) {
+    std::lock_guard<std::mutex> lock(g_art_invalidation_mutex);
     g_art_inline_hook_targets.clear();
     g_preserved_art_pages.clear();
-    g_art_cleanup_enabled = false;
-    g_art_cleanup_completed = false;
+    g_art_invalidation_enabled = false;
+    g_art_invalidation_completed = false;
 
     if (!enabled) return false;
 
     auto snapshot = CaptureLibArtExecutableState();
     if (!snapshot.success) {
-        LOGW("ART inline-hook cleanup was not armed because the pre-Vector libart.so state could "
-             "not be captured safely.");
+        LOGW("ART inline-hook invalidation was not armed because the pre-Vector libart.so state "
+             "could not be captured safely.");
         return false;
     }
 
     g_preserved_art_pages = std::move(snapshot.modified_pages);
-    g_art_cleanup_enabled = true;
+    g_art_invalidation_enabled = true;
     LOGI("Preserved {} pre-existing modified libart.so executable page(s) before installing "
          "Vector hooks.",
          g_preserved_art_pages.size());
     return true;
 }
 
-void RecordArtInlineHookTarget(void *target) {
+void RecordArtInlineHookInvalidationTarget(void *target) {
     if (!target) return;
 
-    std::lock_guard<std::mutex> lock(g_art_cleanup_mutex);
-    if (!g_art_cleanup_enabled || g_art_cleanup_completed) return;
+    std::lock_guard<std::mutex> lock(g_art_invalidation_mutex);
+    if (!g_art_invalidation_enabled || g_art_invalidation_completed) return;
 
     if (std::find(g_art_inline_hook_targets.begin(), g_art_inline_hook_targets.end(), target) ==
         g_art_inline_hook_targets.end()) {
@@ -444,18 +444,18 @@ void RecordArtInlineHookTarget(void *target) {
     }
 }
 
-void ForgetArtInlineHookTarget(void *target) {
+void ForgetArtInlineHookInvalidationTarget(void *target) {
     if (!target) return;
 
-    std::lock_guard<std::mutex> lock(g_art_cleanup_mutex);
+    std::lock_guard<std::mutex> lock(g_art_invalidation_mutex);
     g_art_inline_hook_targets.erase(
         std::remove(g_art_inline_hook_targets.begin(), g_art_inline_hook_targets.end(), target),
         g_art_inline_hook_targets.end());
 }
 
-bool CleanupArtInlineHooksIfEnabled() {
-    std::lock_guard<std::mutex> lock(g_art_cleanup_mutex);
-    if (!g_art_cleanup_enabled || g_art_cleanup_completed) return true;
+bool InvalidateArtInlineHooksIfEnabled() {
+    std::lock_guard<std::mutex> lock(g_art_invalidation_mutex);
+    if (!g_art_invalidation_enabled || g_art_invalidation_completed) return true;
 
     const size_t tracked_targets = g_art_inline_hook_targets.size();
     LOGI("Running libart.so executable-byte invalidation after framework bootstrap "
@@ -464,9 +464,9 @@ bool CleanupArtInlineHooksIfEnabled() {
 
     if (tracked_targets == 0) {
         g_preserved_art_pages.clear();
-        g_art_cleanup_completed = true;
-        g_art_cleanup_enabled = false;
-        LOGI("No Vector/LSPlant ART inline-hook targets were installed; cleanup is unnecessary.");
+        g_art_invalidation_completed = true;
+        g_art_invalidation_enabled = false;
+        LOGI("No Vector/LSPlant ART inline-hook targets were installed; invalidation is unnecessary.");
         return true;
     }
 
@@ -479,16 +479,16 @@ bool CleanupArtInlineHooksIfEnabled() {
     if (!result.success) {
         g_art_inline_hook_targets.clear();
         g_preserved_art_pages.clear();
-        g_art_cleanup_enabled = false;
-        LOGW("libart.so executable-byte invalidation failed; ART inline-hook compatibility mode "
+        g_art_invalidation_enabled = false;
+        LOGW("libart.so executable-byte invalidation failed; ART inline-hook invalidation mode "
              "was not fully applied in this process.");
         return false;
     }
 
     g_art_inline_hook_targets.clear();
     g_preserved_art_pages.clear();
-    g_art_cleanup_completed = true;
-    g_art_cleanup_enabled = false;
+    g_art_invalidation_completed = true;
+    g_art_invalidation_enabled = false;
 
     if (result.modified_pages == 0) {
         LOGI("libart.so executable segments already match the backing file ({} segment(s) checked).",

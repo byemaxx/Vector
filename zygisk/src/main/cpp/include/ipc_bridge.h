@@ -82,10 +82,10 @@ public:
     std::map<std::string, std::string> FetchObfuscationMap(JNIEnv *env, jobject binder);
 
     /**
-     * @brief Queries whether this registered application process should restore LSPlant's
+     * @brief Queries whether this registered application process should invalidate Vector's
      * native ART inline hooks after framework initialization.
      */
-    bool ShouldRestoreArtInlineHooks(JNIEnv *env, jobject binder);
+    bool ShouldInvalidateArtInlineHooks(JNIEnv *env, jobject binder);
 
     /**
      * @brief Sets up the JNI hook to intercept Binder transactions.

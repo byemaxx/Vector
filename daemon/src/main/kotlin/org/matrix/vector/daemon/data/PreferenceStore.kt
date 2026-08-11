@@ -6,7 +6,9 @@ import org.apache.commons.lang3.SerializationUtilsX
 import org.matrix.vector.daemon.system.*
 
 private const val TAG = "VectorPreferenceStore"
-private const val RESTORE_ART_INLINE_HOOKS_KEY = "restore_art_inline_hook_packages"
+private const val INVALIDATE_ART_INLINE_HOOKS_KEY_PREFIX = "invalidate_art_inline_hooks:"
+const val SYSTEM_UI_VIRTUAL_PACKAGE = "system"
+const val SYSTEM_UI_PROCESS = "system:ui"
 
 object PreferenceStore {
 
@@ -103,36 +105,55 @@ object PreferenceStore {
       (getModulePrefs("lspd", 0, "config")["scope_request_blocked"] as? Set<*>)?.contains(pkg) ==
           true
 
-  fun getRestoreArtInlineHookPackages(): Set<String> =
-      (getModulePrefs("lspd", 0, "config")[RESTORE_ART_INLINE_HOOKS_KEY] as? Set<*>)
-          ?.filterIsInstance<String>()
-          ?.toSet()
-          ?: emptySet()
+  fun getInvalidateArtInlineHookPackages(): Set<String> {
+    return getModulePrefs("lspd", 0, "config")
+        .asSequence()
+        .filter { (key, value) ->
+          key.startsWith(INVALIDATE_ART_INLINE_HOOKS_KEY_PREFIX) && value == true
+        }
+        .map { (key, _) -> key.removePrefix(INVALIDATE_ART_INLINE_HOOKS_KEY_PREFIX) }
+        .filter { it.isNotBlank() }
+        .toSet()
+  }
 
-  fun setRestoreArtInlineHookPackages(packages: Collection<String>) =
-      updateModulePref(
-          "lspd",
-          0,
-          "config",
-          RESTORE_ART_INLINE_HOOKS_KEY,
-          packages.filter { it.isNotBlank() }.toSet())
+  /** Updates one package without replacing another Manager client's choices. */
+  fun setInvalidateArtInlineHooks(packageName: String, enabled: Boolean): Boolean {
+    val normalized = packageName.trim()
+    if (normalized.isEmpty()) return false
+    updateModulePref(
+        "lspd",
+        0,
+        "config",
+        INVALIDATE_ART_INLINE_HOOKS_KEY_PREFIX + normalized,
+        if (enabled) true else null)
+    return true
+  }
 
   /**
    * Resolves the configured package list against the actual process topology for this user.
    * This deliberately avoids assuming that every Android process name starts with its package name.
    */
-  fun shouldRestoreArtInlineHooks(processName: String, uid: Int): Boolean {
-    val configured = getRestoreArtInlineHookPackages()
+  fun shouldInvalidateArtInlineHooks(processName: String, uid: Int): Boolean {
+    val configured = getInvalidateArtInlineHookPackages()
     if (configured.isEmpty()) return false
+
+    if (InlineHookProcessPolicy.matchesSystemUiVirtualPackage(configured, processName, uid)) {
+      return true
+    }
 
     val userId = uid / PER_USER_RANGE
     return configured.any { packageName ->
+      if (packageName == SYSTEM_UI_VIRTUAL_PACKAGE) return@any false
       val info =
           packageManager?.getPackageInfoWithComponents(packageName, MATCH_ALL_FLAGS, userId)
               ?: return@any false
       val applicationInfo = info.applicationInfo ?: return@any false
-      applicationInfo.uid == uid &&
-          (processName == applicationInfo.processName || processName in info.fetchProcesses())
+      InlineHookProcessPolicy.matchesPackage(
+          expectedUid = applicationInfo.uid,
+          actualUid = uid,
+          processName = processName,
+          applicationProcessName = applicationInfo.processName,
+          componentProcesses = info.fetchProcesses())
     }
   }
 }

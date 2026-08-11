@@ -445,11 +445,9 @@ object ManagerService : ILSPManagerService.Stub() {
 
   override fun getAutoInclude(packageName: String) = ConfigCache.getAutoInclude(packageName)
 
-  override fun getRestoreArtInlineHookPackages(): MutableList<String> =
-      PreferenceStore.getRestoreArtInlineHookPackages().sorted().toMutableList()
+  override fun getInvalidateArtInlineHookPackages(): MutableList<String> =
+      PreferenceStore.getInvalidateArtInlineHookPackages().sorted().toMutableList()
 
-  override fun setRestoreArtInlineHookPackages(packages: MutableList<String>): Boolean {
-    PreferenceStore.setRestoreArtInlineHookPackages(packages)
-    return true
-  }
+  override fun setInvalidateArtInlineHooks(packageName: String, enabled: Boolean): Boolean =
+      PreferenceStore.setInvalidateArtInlineHooks(packageName, enabled)
 }

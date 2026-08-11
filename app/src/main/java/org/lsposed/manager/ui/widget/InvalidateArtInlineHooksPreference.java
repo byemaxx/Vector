@@ -12,6 +12,7 @@ package org.lsposed.manager.ui.widget;
 import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.os.Parcel;
 import android.util.AttributeSet;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -31,7 +32,7 @@ import org.lsposed.manager.BuildConfig;
 import org.lsposed.manager.ConfigManager;
 import org.lsposed.manager.R;
 import org.lsposed.manager.adapters.AppHelper;
-import org.lsposed.manager.databinding.DialogRestoreArtInlineHooksBinding;
+import org.lsposed.manager.databinding.DialogInvalidateArtInlineHooksBinding;
 import org.lsposed.manager.databinding.ItemModuleBinding;
 import org.lsposed.manager.ui.dialog.BlurBehindDialogBuilder;
 
@@ -40,30 +41,31 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
- * Per-app compatibility selector for restoring LSPlant's native ART inline hooks after startup.
+ * Per-app compatibility selector for invalidating Vector's native ART inline hooks after startup.
  *
  * Selection semantics intentionally mirror the module scope selector: every checkbox change is
  * persisted immediately through the daemon service and is rolled back in the UI when persistence
  * fails. This avoids relying on MultiSelectListPreference's delayed dialog-close persistence.
  */
-public class RestoreArtInlineHooksPreference extends Preference {
+public class InvalidateArtInlineHooksPreference extends Preference {
+    private static final String SYSTEM_UI_VIRTUAL_PACKAGE = "system";
 
-    public RestoreArtInlineHooksPreference(@NonNull Context context, @Nullable AttributeSet attrs) {
+    public InvalidateArtInlineHooksPreference(@NonNull Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
     }
 
-    public RestoreArtInlineHooksPreference(@NonNull Context context, @Nullable AttributeSet attrs,
-                                           int defStyleAttr) {
+    public InvalidateArtInlineHooksPreference(@NonNull Context context, @Nullable AttributeSet attrs,
+                                              int defStyleAttr) {
         super(context, attrs, defStyleAttr);
     }
 
-    public RestoreArtInlineHooksPreference(@NonNull Context context, @Nullable AttributeSet attrs,
-                                           int defStyleAttr, int defStyleRes) {
+    public InvalidateArtInlineHooksPreference(@NonNull Context context, @Nullable AttributeSet attrs,
+                                              int defStyleAttr, int defStyleRes) {
         super(context, attrs, defStyleAttr, defStyleRes);
     }
 
@@ -87,16 +89,26 @@ public class RestoreArtInlineHooksPreference extends Preference {
     private void showSelector() {
         Context context = getContext();
         PackageManager packageManager = context.getPackageManager();
-        Set<String> selectedPackages = ConfigManager.getRestoreArtInlineHookPackages();
+        Set<String> selectedPackages = ConfigManager.getInvalidateArtInlineHookPackages();
 
         // AppHelper is the same application source used by the normal module scope selector. The
-        // restore policy is package-wide, so collapse duplicate installations from multiple users.
+        // invalidation policy is package-wide, so collapse duplicate installations from multiple
+        // users. Keep system_server unavailable, but expose LSPosed's safe System UI virtual target.
         Map<String, PackageInfo> packagesByName = new HashMap<>();
+        PackageInfo androidPackage = null;
         for (PackageInfo info : AppHelper.getAppList(false)) {
             if (info == null || info.packageName == null || info.applicationInfo == null) continue;
-            if ("android".equals(info.packageName) || "system".equals(info.packageName)) continue;
+            if ("android".equals(info.packageName)) {
+                androidPackage = info;
+                continue;
+            }
+            if (SYSTEM_UI_VIRTUAL_PACKAGE.equals(info.packageName)) continue;
             if (BuildConfig.APPLICATION_ID.equals(info.packageName)) continue;
             packagesByName.putIfAbsent(info.packageName, info);
+        }
+        if (androidPackage != null) {
+            packagesByName.put(SYSTEM_UI_VIRTUAL_PACKAGE,
+                    createSystemUiVirtualPackage(androidPackage, context));
         }
 
         List<PackageInfo> applications = new ArrayList<>(packagesByName.values());
@@ -109,13 +121,13 @@ public class RestoreArtInlineHooksPreference extends Preference {
             return appComparator.compare(left, right);
         });
 
-        DialogRestoreArtInlineHooksBinding binding =
-                DialogRestoreArtInlineHooksBinding.inflate(LayoutInflater.from(context));
-        binding.title.setText(R.string.settings_restore_art_inline_hooks);
+        DialogInvalidateArtInlineHooksBinding binding =
+                DialogInvalidateArtInlineHooksBinding.inflate(LayoutInflater.from(context));
+        binding.title.setText(R.string.settings_invalidate_art_inline_hooks);
         binding.recyclerView.setLayoutManager(new LinearLayoutManager(context));
 
-        RestoreAppAdapter adapter =
-                new RestoreAppAdapter(packageManager, applications, selectedPackages);
+        InvalidateAppAdapter adapter =
+                new InvalidateAppAdapter(packageManager, applications, selectedPackages);
         adapter.setHasStableIds(true);
         binding.recyclerView.setAdapter(adapter);
         binding.searchView.setQueryHint(context.getString(R.string.search_apps));
@@ -138,14 +150,29 @@ public class RestoreArtInlineHooksPreference extends Preference {
         dialog.show();
     }
 
-    private static class RestoreAppAdapter extends RecyclerView.Adapter<RestoreAppAdapter.ViewHolder> {
+    private static PackageInfo createSystemUiVirtualPackage(PackageInfo source, Context context) {
+        Parcel parcel = Parcel.obtain();
+        try {
+            source.writeToParcel(parcel, 0);
+            parcel.setDataPosition(0);
+            PackageInfo copy = PackageInfo.CREATOR.createFromParcel(parcel);
+            copy.packageName = SYSTEM_UI_VIRTUAL_PACKAGE;
+            copy.applicationInfo.packageName = SYSTEM_UI_VIRTUAL_PACKAGE;
+            copy.applicationInfo.nonLocalizedLabel = context.getString(R.string.system_ui_virtual_app);
+            return copy;
+        } finally {
+            parcel.recycle();
+        }
+    }
+
+    private static class InvalidateAppAdapter extends RecyclerView.Adapter<InvalidateAppAdapter.ViewHolder> {
         private final PackageManager packageManager;
         private final List<PackageInfo> allApplications;
         private final List<PackageInfo> applications;
         private final Set<String> selectedPackages;
 
-        RestoreAppAdapter(PackageManager packageManager, List<PackageInfo> applications,
-                          Set<String> selectedPackages) {
+        InvalidateAppAdapter(PackageManager packageManager, List<PackageInfo> applications,
+                             Set<String> selectedPackages) {
             this.packageManager = packageManager;
             this.allApplications = new ArrayList<>(applications);
             this.applications = new ArrayList<>(applications);
@@ -217,16 +244,12 @@ public class RestoreArtInlineHooksPreference extends Preference {
 
         private void attachListener(CompoundButton checkbox, String packageName) {
             checkbox.setOnCheckedChangeListener((button, isChecked) -> {
-                Set<String> updated = new HashSet<>(selectedPackages);
-                if (isChecked) {
-                    updated.add(packageName);
-                } else {
-                    updated.remove(packageName);
-                }
-
-                if (ConfigManager.setRestoreArtInlineHookPackages(updated)) {
-                    selectedPackages.clear();
-                    selectedPackages.addAll(updated);
+                if (ConfigManager.setInvalidateArtInlineHooks(packageName, isChecked)) {
+                    if (isChecked) {
+                        selectedPackages.add(packageName);
+                    } else {
+                        selectedPackages.remove(packageName);
+                    }
                     return;
                 }
 
@@ -235,7 +258,7 @@ public class RestoreArtInlineHooksPreference extends Preference {
                 button.setOnCheckedChangeListener(null);
                 button.setChecked(!isChecked);
                 attachListener(button, packageName);
-                Toast.makeText(button.getContext(), R.string.failed_to_save_scope_list,
+                Toast.makeText(button.getContext(), R.string.failed_to_save_invalidate_inline_hooks,
                         Toast.LENGTH_SHORT).show();
             });
         }

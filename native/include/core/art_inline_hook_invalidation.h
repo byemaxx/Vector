@@ -3,20 +3,20 @@
 namespace vector::native {
 
 /**
- * Configure per-process ART inline-hook cleanup state before LSPlant initialization.
+ * Configure per-process ART inline-hook invalidation state before LSPlant initialization.
  *
  * This is reset for every specialized process. system_server and normal apps that are not on the
- * compatibility list pass false, making the post-bootstrap cleanup call a no-op.
+ * compatibility list pass false, making the post-bootstrap invalidation call a no-op.
  *
- * Returns whether cleanup is armed. Enabling can fail when the pre-Vector libart executable state
- * cannot be captured safely; in that case cleanup remains disabled so existing native hooks are
- * never overwritten without a recoverable baseline.
+ * Returns whether invalidation is armed. Enabling can fail when the pre-Vector libart executable
+ * state cannot be captured safely; in that case invalidation remains disabled so existing native
+ * hooks are never overwritten without a recoverable baseline.
  */
-bool ConfigureArtInlineHookCleanup(bool enabled);
+bool ConfigureArtInlineHookInvalidation(bool enabled);
 
 /** Record/forget native libart.so targets installed through LSPlant's InitInfo hook handler. */
-void RecordArtInlineHookTarget(void *target);
-void ForgetArtInlineHookTarget(void *target);
+void RecordArtInlineHookInvalidationTarget(void *target);
+void ForgetArtInlineHookInvalidationTarget(void *target);
 
 /**
  * Run the one-shot compatibility invalidation after framework bootstrap and before app loading.
@@ -26,8 +26,8 @@ void ForgetArtInlineHookTarget(void *target);
  * before Vector installed its hooks. This intentionally does not perform normal Dobby hook teardown,
  * so LSPlant/Dobby trampoline and interceptor metadata remain intact while Vector's patched libart
  * entry code is removed.
- * Disabled/already-cleaned states are successful no-ops.
+ * Disabled/already-invalidated states are successful no-ops.
  */
-bool CleanupArtInlineHooksIfEnabled();
+bool InvalidateArtInlineHooksIfEnabled();
 
 }  // namespace vector::native
