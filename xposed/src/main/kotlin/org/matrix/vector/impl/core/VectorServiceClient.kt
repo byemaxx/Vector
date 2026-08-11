@@ -44,17 +44,23 @@ object VectorServiceClient : ILSPApplicationService, IBinder.DeathRecipient {
             .onFailure { Log.w(TAG, "Failed to unlink old service death recipient", it) }
 
         registeredTargetIds.clear()
-        runCatching {
-                service = appService
-                processName = niceName
-                binder.linkToDeath(this, 0)
-                pendingHotReloadTargets.values.forEach(::registerHotReloadTargetLocked)
-            }
+        service = appService
+        processName = niceName
+
+        // The parasitic manager is initialized while the app is still being specialized from the
+        // zygote. On some Android 16 vendor builds the Binder thread pool has not started yet, so
+        // linkToDeath can fail even though synchronous transactions on this Binder work normally.
+        // Death notification is a recovery aid, not a prerequisite for using a live service.
+        runCatching { binder.linkToDeath(this, 0) }
             .onFailure {
-                Log.e(TAG, "Failed to link to death for service in process: $niceName", it)
-                service = null
-                registeredTargetIds.clear()
+                Log.w(
+                    TAG,
+                    "Service death monitoring is unavailable in process $niceName; retaining live service",
+                    it,
+                )
             }
+
+        pendingHotReloadTargets.values.forEach(::registerHotReloadTargetLocked)
     }
 
     override fun isLogMuted(): Boolean {
@@ -74,7 +80,14 @@ object VectorServiceClient : ILSPApplicationService, IBinder.DeathRecipient {
     }
 
     override fun requestInjectedManagerBinder(binder: List<IBinder>): ParcelFileDescriptor? {
-        return runCatching { service?.requestInjectedManagerBinder(binder) }.getOrNull()
+        val currentService = service
+        if (currentService == null) {
+            Log.e(TAG, "Cannot request injected manager: application service is unavailable")
+            return null
+        }
+        return runCatching { currentService.requestInjectedManagerBinder(binder) }
+            .onFailure { Log.e(TAG, "Failed to request injected manager resources", it) }
+            .getOrNull()
     }
 
     override fun registerHotReloadTarget(

@@ -36,6 +36,7 @@ import org.lsposed.manager.receivers.LSPManagerServiceHolder;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -339,6 +340,26 @@ public class ConfigManager {
         try {
             LSPManagerServiceHolder.getService().setAutoInclude(packageName, enable);
             return true;
+        } catch (RemoteException e) {
+            Log.e(App.TAG, Log.getStackTraceString(e));
+            return false;
+        }
+    }
+
+    public static Set<String> getInvalidateArtInlineHookPackages() {
+        try {
+            var packages = LSPManagerServiceHolder.getService().getInvalidateArtInlineHookPackages();
+            return packages == null ? new HashSet<>() : new HashSet<>(packages);
+        } catch (RemoteException e) {
+            Log.e(App.TAG, Log.getStackTraceString(e));
+            return new HashSet<>();
+        }
+    }
+
+    public static boolean setInvalidateArtInlineHooks(String packageName, boolean enabled) {
+        try {
+            return LSPManagerServiceHolder.getService()
+                    .setInvalidateArtInlineHooks(packageName, enabled);
         } catch (RemoteException e) {
             Log.e(App.TAG, Log.getStackTraceString(e));
             return false;

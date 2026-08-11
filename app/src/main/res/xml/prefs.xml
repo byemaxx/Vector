@@ -105,6 +105,13 @@
             android:shouldDisableView="false"
             android:summary="@string/settings_enable_status_notification_summary"
             android:title="@string/settings_enable_status_notification" />
+
+        <org.lsposed.manager.ui.widget.InvalidateArtInlineHooksPreference
+            android:icon="@drawable/ic_outline_android_24"
+            android:key="invalidate_art_inline_hooks"
+            android:persistent="false"
+            android:summary="@string/settings_invalidate_art_inline_hooks_summary"
+            android:title="@string/settings_invalidate_art_inline_hooks" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="@string/settings_group_repo">

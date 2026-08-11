@@ -444,4 +444,10 @@ object ManagerService : ILSPManagerService.Stub() {
       ModuleDatabase.setAutoInclude(packageName, enabled)
 
   override fun getAutoInclude(packageName: String) = ConfigCache.getAutoInclude(packageName)
+
+  override fun getInvalidateArtInlineHookPackages(): MutableList<String> =
+      PreferenceStore.getInvalidateArtInlineHookPackages().sorted().toMutableList()
+
+  override fun setInvalidateArtInlineHooks(packageName: String, enabled: Boolean): Boolean =
+      PreferenceStore.setInvalidateArtInlineHooks(packageName, enabled)
 }

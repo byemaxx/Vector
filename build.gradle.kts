@@ -36,7 +36,7 @@ abstract class GitCommitCountValueSource : ValueSource<String, ValueSourceParame
     }
 }
 
-/** A ValueSource that executes 'git tag' to get the latest version tag. */
+/** A ValueSource that gets the nearest release tag reachable from the commit being built. */
 abstract class GitLatestTagValueSource : ValueSource<String, ValueSourceParameters.None> {
     @get:Inject abstract val execOperations: ExecOperations
 
@@ -44,7 +44,15 @@ abstract class GitLatestTagValueSource : ValueSource<String, ValueSourceParamete
         val output = ByteArrayOutputStream()
         val result =
             execOperations.exec {
-                commandLine("git", "tag", "--list", "--sort=-v:refname")
+                commandLine(
+                    "git",
+                    "describe",
+                    "--tags",
+                    "--abbrev=0",
+                    "--match",
+                    "v[0-9]*",
+                    "HEAD",
+                )
                 standardOutput = output
                 isIgnoreExitValue = true
             }

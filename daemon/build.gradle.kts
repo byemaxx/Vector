@@ -27,8 +27,19 @@ android {
     buildConfigField("String", "FRAMEWORK_NAME", """"LSPosed"""")
     buildConfigField("String", "MANAGER_INJECTED_PKG_NAME", """"$injectedPackageName"""")
     buildConfigField("int", "MANAGER_INJECTED_UID", """$injectedPackageUid""")
-    buildConfigField("String", "VERSION_NAME", """"${versionNameProvider.get()}"""")
-    buildConfigField("long", "VERSION_CODE", versionCodeProvider.get())
+    // Keep version fields out of Java's ConstantValue attributes. Kotlin otherwise inlines them
+    // into daemon classes, allowing an incremental build to retain a previous Git-derived version
+    // even after BuildConfig.java and the APK manifest have been regenerated.
+    buildConfigField(
+        "String",
+        "VERSION_NAME",
+        "String.valueOf(\"${versionNameProvider.get()}\")",
+    )
+    buildConfigField(
+        "long",
+        "VERSION_CODE",
+        "Long.parseLong(\"${versionCodeProvider.get()}\")",
+    )
 
     val cliToken = UUID.randomUUID()
     // Inject the MSB and LSB as Long constants
@@ -67,6 +78,12 @@ android.applicationVariants.all {
                 .get()
                 .signingConfig
         val outSrc = file("$outSrcDir/org/matrix/vector/daemon/utils/SignInfo.kt")
+        // The generated certificate is compiled into the daemon and must always match the
+        // manager APK produced by :app. Without these inputs Gradle can reuse SignInfo.kt after
+        // the signing key changes, causing the daemon to reject its own manager.apk at runtime.
+        sign?.storeFile?.let { inputs.file(it).withPathSensitivity(PathSensitivity.NONE) }
+        inputs.property("signingStoreType", sign?.storeType ?: "")
+        inputs.property("signingKeyAlias", sign?.keyAlias ?: "")
         outputs.file(outSrc)
         doLast {
           outSrc.parentFile.mkdirs()
@@ -110,4 +127,5 @@ dependencies {
   implementation(projects.services.managerService)
   compileOnly(libs.androidx.annotation)
   compileOnly(projects.hiddenapi.stubs)
+  testImplementation(libs.junit)
 }

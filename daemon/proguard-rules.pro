@@ -20,6 +20,9 @@
 -keep class picocli.CommandLine$AutoHelpMixin { *; }
 -keep class picocli.CommandLine$HelpCommand { *; }
 
+# Picocli instantiates the version provider reflectively from the @Command class literal.
+-keep class org.matrix.vector.daemon.CliVersionProvider { *; }
+
 # Keep ANY class (and its constructor) annotated with @Command
 -keep @picocli.CommandLine$Command class * {
     <init>(...);

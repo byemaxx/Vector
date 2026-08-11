@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_invalidate_art_inline_hooks">ART inline hook compatibility mode</string>
+    <string name="settings_invalidate_art_inline_hooks_summary">Disable Vector\'s ART inline hooks in selected apps to improve compatibility. Some modules may stop working, and apps may malfunction or crash. Changes apply the next time the app starts.</string>
+    <string name="system_ui_virtual_app">Android system UI</string>
+    <string name="failed_to_save_invalidate_inline_hooks">Failed to save ART inline hook setting</string>
+    <string name="search_apps">Search apps</string>
+</resources>
