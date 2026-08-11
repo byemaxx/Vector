@@ -142,7 +142,7 @@ object ApplicationService : ILSPApplicationService.Stub() {
       RESTORE_ART_INLINE_HOOKS_TRANSACTION_CODE -> {
         val info = ensureRegistered()
         val restore =
-            info.key.uid != Process.SYSTEM_UID &&
+            !(info.key.uid == Process.SYSTEM_UID && info.processName == "system") &&
                 PreferenceStore.shouldRestoreArtInlineHooks(info.processName, info.key.uid)
         reply?.writeNoException()
         reply?.writeInt(if (restore) 1 else 0)
