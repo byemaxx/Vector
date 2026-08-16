@@ -352,6 +352,7 @@ object NotificationManager {
             .setContentIntent(pi)
             .setVisibility(Notification.VISIBILITY_SECRET)
             .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
             .setStyle(Notification.BigTextStyle().bigText(content))
             .build()
             .apply { extras.putString("android.substName", BuildConfig.FRAMEWORK_NAME) }

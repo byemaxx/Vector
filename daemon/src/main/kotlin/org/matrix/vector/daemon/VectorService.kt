@@ -342,7 +342,12 @@ object VectorService : IDaemonService.Stub() {
           }
     }
 
-    if (moduleName != null && isXposedModule && !isRemovedAction && !isRemovedForAllUsers) {
+    // PACKAGE_CHANGED can be emitted for component/enable-state changes without an APK update.
+    // Only a completed package add/replace should produce the user-facing module update notice.
+    if (action == Intent.ACTION_PACKAGE_ADDED &&
+        moduleName != null &&
+        isXposedModule &&
+        !isRemovedForAllUsers) {
       val scopes = ConfigCache.getModuleScope(moduleName) ?: emptyList()
       val isSystemModule = scopes.any { it.packageName == "system" }
       val isEnabled = ManagerService.enabledModules().contains(moduleName)
