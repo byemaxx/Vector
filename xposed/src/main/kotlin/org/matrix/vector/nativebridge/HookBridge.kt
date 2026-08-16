@@ -45,6 +45,14 @@ object HookBridge {
 
     @JvmStatic external fun deoptimizeMethod(method: Executable): Boolean
 
+    /**
+     * Allocates an instance of [clazz] without running any constructor.
+     *
+     * Throws InstantiationException for a class that has no instances to allocate - an interface,
+     * an array class, a primitive type or an abstract class - which is what
+     * `Constructor#newInstance` reports and what the runtime would otherwise only catch in a debug
+     * build.
+     */
     @JvmStatic
     @Throws(InstantiationException::class)
     external fun <T> allocateObject(clazz: Class<T>): T
@@ -57,18 +65,34 @@ object HookBridge {
     )
     external fun invokeOriginalMethod(method: Executable, thisObject: Any?, vararg args: Any?): Any?
 
+    /**
+     * Runs [executable]'s own body, skipping the trampoline of every hook installed on it.
+     *
+     * The one dispatch primitive behind the whole invoker family, and behind the legacy bridge.
+     * JNI performs no access control, which is what lets an invocation through an invoker bypass
+     * access checks - and no receiver or argument check either, so this refuses against
+     * [parameterTypes] everything reflection would refuse. Callers refuse it earlier still, so that
+     * their own refusal is not reported as something the call produced.
+     *
+     * [shorty] carries the return type first, then one character per parameter. [declaringClass] is
+     * the class to dispatch against, which is the superclass for a `newInstanceSpecial`.
+     * [isStatic] and [nonVirtual] pick the JNI call form; a null [args] means no arguments.
+     *
+     * Only what the call itself throws is reported wrapped in [InvocationTargetException]; a
+     * refusal of the receiver or of an argument propagates raw, as `Method#invoke` reports it.
+     * IllegalAccessException is not among them, because neither branch runs an access check.
+     */
     @JvmStatic
-    @Throws(
-        IllegalAccessException::class,
-        IllegalArgumentException::class,
-        InvocationTargetException::class,
-    )
-    external fun <T> invokeSpecialMethod(
-        method: Executable,
+    @Throws(IllegalArgumentException::class, InvocationTargetException::class)
+    external fun invokeOriginal(
+        executable: Executable,
         shorty: CharArray,
-        clazz: Class<T>,
+        parameterTypes: Array<Class<*>>,
+        declaringClass: Class<*>,
+        isStatic: Boolean,
+        nonVirtual: Boolean,
         thisObject: Any?,
-        vararg args: Any?,
+        args: Array<Any?>?,
     ): Any?
 
     @JvmStatic @FastNative external fun instanceOf(obj: Any?, clazz: Class<*>): Boolean

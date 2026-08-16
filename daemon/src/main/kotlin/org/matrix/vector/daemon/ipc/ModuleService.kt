@@ -38,11 +38,14 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
     /** UIDs whose current module-app process successfully received this service binder. */
     private val uidSet = ConcurrentHashMap.newKeySet<Int>()
 
-    /** UIDs with a delivery running so ACTIVE/CACHED/IDLE observer events cannot schedule duplicates. */
-    private val sending = ConcurrentHashMap.newKeySet<Int>()
+    /** The delivery attempt that currently owns each uid. */
+    private val sending = ConcurrentHashMap<Int, Any>()
 
     /** Keeps the provider proxy and DeathRecipient alive until the recipient process dies. */
     private val deliveries = ConcurrentHashMap<Int, Pair<IBinder, IBinder.DeathRecipient>>()
+
+    /** Serializes ownership handoff between a delivery, uidGone(), and binder death. */
+    private val deliveryLock = Any()
 
     private val serviceMap = Collections.synchronizedMap(WeakHashMap<Module, ModuleService>())
 
@@ -69,15 +72,18 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
     }
 
     fun uidStarts(uid: Int) {
-      if (uid in uidSet || !sending.add(uid)) return
+      if (uid in uidSet) return
+
+      val attempt = Any()
+      if (sending.putIfAbsent(uid, attempt) != null) return
 
       val module = ConfigCache.getModuleByUid(uid)
       if (module?.file?.legacy != false) {
-        sending.remove(uid)
+        sending.remove(uid, attempt)
         return
       }
       if (isThrottled(uid)) {
-        sending.remove(uid)
+        sending.remove(uid, attempt)
         return
       }
 
@@ -87,19 +93,27 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
               try {
                 val delivered = service.sendBinder(uid)
                 if (delivered != null) {
-                  uidSet.add(uid)
-                  binderFailures.remove(uid)
-                  linkDelivery(uid, delivered)
+                  synchronized(deliveryLock) {
+                    // uidGone() may have abandoned this send and allowed a replacement process to
+                    // start another one. Only the attempt that still owns the uid may commit.
+                    if (sending[uid] === attempt) {
+                      uidSet.add(uid)
+                      binderFailures.remove(uid)
+                      linkDelivery(uid, delivered)
+                    }
+                  }
                 } else {
+                  // A stale failed attempt still contributes to throttling: dying while AMS waits
+                  // for the provider is exactly the restart loop the throttle is intended to stop.
                   recordFailure(uid, module.packageName)
                 }
               } finally {
-                sending.remove(uid)
+                sending.remove(uid, attempt)
               }
             }
           }
           .onFailure {
-            sending.remove(uid)
+            sending.remove(uid, attempt)
             Log.w(TAG, "Could not schedule binder delivery for ${module.packageName}", it)
           }
     }
@@ -108,9 +122,20 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
      * UID_GONE is not enough: another process under the same UID may survive while the process that
      * received this binder dies. Watching the provider binder allows the restarted module process
      * to become eligible for delivery again without holding an external provider reference.
+     *
+     * Called while holding [deliveryLock] by the attempt that owns the uid.
      */
     private fun linkDelivery(uid: Int, provider: IBinder) {
-      val recipient = IBinder.DeathRecipient { uidSet.remove(uid) }
+      val recipient =
+          object : IBinder.DeathRecipient {
+            override fun binderDied() {
+              synchronized(deliveryLock) {
+                // A queued death from an older process must not erase the replacement process's
+                // delivery. Remove only the exact provider/recipient pair this callback belongs to.
+                if (deliveries.remove(uid, provider to this)) uidSet.remove(uid)
+              }
+            }
+          }
       runCatching {
             provider.linkToDeath(recipient, 0)
             deliveries.put(uid, provider to recipient)?.let { (old, previous) ->
@@ -149,10 +174,15 @@ class ModuleService(private val loadedModule: Module) : IXposedService.Stub() {
     }
 
     fun uidGone(uid: Int) {
-      uidSet.remove(uid)
-      sending.remove(uid)
-      deliveries.remove(uid)?.let { (binder, recipient) ->
-        runCatching { binder.unlinkToDeath(recipient, 0) }
+      synchronized(deliveryLock) {
+        uidSet.remove(uid)
+        // Do not wait for a provider.call that may never return. Dropping ownership lets a
+        // replacement process start immediately; the attempt token prevents the old send from
+        // committing over that replacement when it eventually returns.
+        sending.remove(uid)
+        deliveries.remove(uid)?.let { (binder, recipient) ->
+          runCatching { binder.unlinkToDeath(recipient, 0) }
+        }
       }
     }
 

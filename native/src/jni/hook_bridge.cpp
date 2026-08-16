@@ -11,6 +11,8 @@
 #include <vector>
 
 #include "core/config_bridge.h"
+#include "elf/elf_image.h"
+#include "elf/symbol_cache.h"
 #include "jni/jni_bridge.h"
 #include "jni/jni_hooks.h"
 
@@ -90,6 +92,212 @@ SharedHashMap<jmethodID, std::unique_ptr<HookItem>> hooked_methods;
 
 // Cached JNI method and field IDs for performance.
 jmethodID invoke = nullptr;
+
+/**
+ * @struct PrimitiveWrapper
+ * @brief One boxed primitive type, with its own accessor and its own valueOf.
+ *
+ * The accessor has to be the wrapper's own. java.lang.Character is not a java.lang.Number, so
+ * calling Number.intValue() on a Character reads Number's vtable index out of Character's vtable,
+ * which lands on an unrelated method or past the end of it.
+ */
+struct PrimitiveWrapper {
+    char shorty;
+    jclass clazz;
+    jmethodID unbox;
+    jmethodID box;
+};
+
+constexpr size_t kWrapperCount = 8;
+
+// The eight wrappers, resolved once and held as global references.
+struct WrapperTable {
+    PrimitiveWrapper entries[kWrapperCount];
+
+    explicit WrapperTable(JNIEnv *env) {
+        // Ordered by how often an argument turns out to be one: identifying an argument's wrapper
+        // is a walk of this table comparing its class against each entry's.
+        static constexpr struct {
+            char shorty;
+            const char *name;
+            const char *accessor;
+            const char *accessor_signature;
+            const char *box_signature;
+        } kSpecs[kWrapperCount] = {
+            {'I', "java/lang/Integer", "intValue", "()I", "(I)Ljava/lang/Integer;"},
+            {'Z', "java/lang/Boolean", "booleanValue", "()Z", "(Z)Ljava/lang/Boolean;"},
+            {'J', "java/lang/Long", "longValue", "()J", "(J)Ljava/lang/Long;"},
+            {'D', "java/lang/Double", "doubleValue", "()D", "(D)Ljava/lang/Double;"},
+            {'F', "java/lang/Float", "floatValue", "()F", "(F)Ljava/lang/Float;"},
+            {'C', "java/lang/Character", "charValue", "()C", "(C)Ljava/lang/Character;"},
+            {'B', "java/lang/Byte", "byteValue", "()B", "(B)Ljava/lang/Byte;"},
+            {'S', "java/lang/Short", "shortValue", "()S", "(S)Ljava/lang/Short;"},
+        };
+
+        for (size_t i = 0; i < kWrapperCount; ++i) {
+            jclass local = env->FindClass(kSpecs[i].name);
+            entries[i].shorty = kSpecs[i].shorty;
+            entries[i].clazz = static_cast<jclass>(env->NewGlobalRef(local));
+            entries[i].unbox =
+                env->GetMethodID(local, kSpecs[i].accessor, kSpecs[i].accessor_signature);
+            entries[i].box = env->GetStaticMethodID(local, "valueOf", kSpecs[i].box_signature);
+            env->DeleteLocalRef(local);
+        }
+    }
+};
+
+const WrapperTable &Wrappers(JNIEnv *env) {
+    static const WrapperTable table(env);
+    return table;
+}
+
+// The wrapper an argument actually is, which is what decides whether the conversion the parameter
+// asks for is a widening one. Null for anything that is not a boxed primitive.
+//
+// Exact class identity, not IsInstanceOf: one JNI call and then pointer comparisons, instead of up
+// to eight round trips per argument on the framework's own invocation path. It is also what the
+// widening matrix means. No class can extend a wrapper - all eight are final - but plenty extend
+// java.lang.Number, and reflection converts none of them.
+const PrimitiveWrapper *WrapperOf(JNIEnv *env, jobject value) {
+    jclass value_class = env->GetObjectClass(value);
+    const PrimitiveWrapper *found = nullptr;
+    for (const auto &entry : Wrappers(env).entries) {
+        if (env->IsSameObject(value_class, entry.clazz) == JNI_TRUE) {
+            found = &entry;
+            break;
+        }
+    }
+    env->DeleteLocalRef(value_class);
+    return found;
+}
+
+/**
+ * @brief The name ART puts in a reflective refusal.
+ *
+ * Class#getTypeName is the Java side of ART's PrettyDescriptor: dotted, and "int[]" rather than
+ * "[I". Only reached on the way to throwing, so what it costs does not matter.
+ */
+std::string PrettyName(JNIEnv *env, jclass cls) {
+    static jclass cls_Class = (jclass)env->NewGlobalRef(env->FindClass("java/lang/Class"));
+    static auto *const get_type_name =
+        env->GetMethodID(cls_Class, "getTypeName", "()Ljava/lang/String;");
+
+    // Only an allocation failure can fail either step, and the caller is on its way to throwing a
+    // refusal that says more than an OutOfMemoryError would - so the pending one is cleared rather
+    // than left for the next JNI call to trip over.
+    auto name = (jstring)env->CallObjectMethod(cls, get_type_name);
+    if (name == nullptr) {
+        env->ExceptionClear();
+        return "?";
+    }
+    std::string result = "?";
+    if (const char *chars = env->GetStringUTFChars(name, nullptr); chars != nullptr) {
+        result = chars;
+        env->ReleaseStringUTFChars(name, chars);
+    } else {
+        env->ExceptionClear();
+    }
+    env->DeleteLocalRef(name);
+    return result;
+}
+
+// The wrapper that boxes the primitive `shorty` names.
+const PrimitiveWrapper *WrapperFor(JNIEnv *env, char shorty) {
+    for (const auto &entry : Wrappers(env).entries) {
+        if (entry.shorty == shorty) return &entry;
+    }
+    return nullptr;
+}
+
+/**
+ * @brief Whether a value of the primitive `from` may be passed where `to` is declared.
+ *
+ * The identity conversion plus the widening primitive conversions of JLS 5.1.2, which is all
+ * java.lang.reflect performs on an argument. Every other pair is an IllegalArgumentException there,
+ * rather than the silent truncation an unchecked unboxing would produce.
+ */
+constexpr bool Widens(char from, char to) {
+    if (from == to) return true;
+    switch (from) {
+    case 'B':
+        return to == 'S' || to == 'I' || to == 'J' || to == 'F' || to == 'D';
+    case 'S':
+    case 'C':
+        return to == 'I' || to == 'J' || to == 'F' || to == 'D';
+    case 'I':
+        return to == 'J' || to == 'F' || to == 'D';
+    case 'J':
+        return to == 'F' || to == 'D';
+    case 'F':
+        return to == 'D';
+    default:
+        return false;
+    }
+}
+
+/**
+ * @brief Unboxes `value` with its own accessor and stores it as the primitive `to` names.
+ *
+ * Widens() has already refused every pair that is not a widening conversion, so none of the casts
+ * below narrows anything.
+ */
+void StoreWidened(JNIEnv *env, const PrimitiveWrapper &from, char to, jobject value, jvalue &out) {
+    if (from.shorty == 'Z') {
+        out.z = env->CallBooleanMethod(value, from.unbox);
+        return;
+    }
+
+    jlong integral = 0;
+    jdouble floating = 0;
+    switch (from.shorty) {
+    case 'B':
+        integral = env->CallByteMethod(value, from.unbox);
+        break;
+    case 'C':
+        integral = env->CallCharMethod(value, from.unbox);
+        break;
+    case 'S':
+        integral = env->CallShortMethod(value, from.unbox);
+        break;
+    case 'I':
+        integral = env->CallIntMethod(value, from.unbox);
+        break;
+    case 'J':
+        integral = env->CallLongMethod(value, from.unbox);
+        break;
+    case 'F':
+        floating = env->CallFloatMethod(value, from.unbox);
+        break;
+    default:
+        floating = env->CallDoubleMethod(value, from.unbox);
+        break;
+    }
+
+    const bool from_floating = from.shorty == 'F' || from.shorty == 'D';
+    switch (to) {
+    case 'B':
+        out.b = static_cast<jbyte>(integral);
+        break;
+    case 'C':
+        out.c = static_cast<jchar>(integral);
+        break;
+    case 'S':
+        out.s = static_cast<jshort>(integral);
+        break;
+    case 'I':
+        out.i = static_cast<jint>(integral);
+        break;
+    case 'J':
+        out.j = integral;
+        break;
+    case 'F':
+        out.f = from_floating ? static_cast<jfloat>(floating) : static_cast<jfloat>(integral);
+        break;
+    default:
+        out.d = from_floating ? floating : static_cast<jdouble>(integral);
+        break;
+    }
+}
 
 }  // namespace
 
@@ -268,6 +476,17 @@ VECTOR_DEF_NATIVE_METHOD(jboolean, HookBridge, deoptimizeMethod, jobject hookMet
 
 /**
  * @brief JNI method to invoke the original, un-hooked method.
+ *
+ * The trampoline's terminal, and only that: it is reached from inside a hook callback, so on every
+ * call that matters the hook item exists and its backup is the original body. Everything that
+ * dispatches an executable which may carry no hook at all goes through invokeOriginal instead,
+ * which does not depend on the reflected object being accessible.
+ *
+ * The two fallbacks below are what a hook whose installation failed leaves behind: no hook item at
+ * all, and the FAILED sentinel. lsplant replaced no entry point in either case, so the executable
+ * still carries its own body - but the first reaches it through the caller's own reflected object,
+ * where ART does run an access check, and the second reports it as a null return the caller cannot
+ * tell from a method that returned null. Neither is reachable from the trampoline.
  */
 VECTOR_DEF_NATIVE_METHOD(jobject, HookBridge, invokeOriginalMethod, jobject hookMethod,
                          jobject thiz, jobjectArray args) {
@@ -287,262 +506,251 @@ VECTOR_DEF_NATIVE_METHOD(jobject, HookBridge, invokeOriginalMethod, jobject hook
 }
 
 /**
- * @brief JNI wrapper around AllocObject.
+ * @brief JNI wrapper around AllocObject, refusing what AllocObject has no answer for.
+ *
+ * AllocObject is only defined for an instantiable non-array class. CheckJNI aborts the process on
+ * anything else, and without it ART allocates from a class whose instance size means nothing.
+ * Constructor#newInstance reports that as InstantiationException, which is what CtorInvoker
+ * documents and what this method has always declared.
  */
 VECTOR_DEF_NATIVE_METHOD(jobject, HookBridge, allocateObject, jclass cls) {
+    static jclass cls_Class = (jclass)env->NewGlobalRef(env->FindClass("java/lang/Class"));
+    static auto *const is_interface = env->GetMethodID(cls_Class, "isInterface", "()Z");
+    static auto *const is_array = env->GetMethodID(cls_Class, "isArray", "()Z");
+    static auto *const is_primitive = env->GetMethodID(cls_Class, "isPrimitive", "()Z");
+    static auto *const get_modifiers = env->GetMethodID(cls_Class, "getModifiers", "()I");
+    constexpr jint kAccAbstract = 0x0400;
+
+    if (cls == nullptr || env->CallBooleanMethod(cls, is_interface) == JNI_TRUE ||
+        env->CallBooleanMethod(cls, is_array) == JNI_TRUE ||
+        env->CallBooleanMethod(cls, is_primitive) == JNI_TRUE ||
+        (env->CallIntMethod(cls, get_modifiers) & kAccAbstract) != 0) {
+        jclass error = env->FindClass("java/lang/InstantiationException");
+        env->ThrowNew(error, "no instance of this class can be allocated");
+        env->DeleteLocalRef(error);
+        return nullptr;
+    }
     return env->AllocObject(cls);
 }
 
 /**
- * Core JNI backend for non-virtual method invocation and special object initialization.
+ * @brief Runs an executable's own body: the one dispatch primitive behind every invoker.
  *
- * Implementation details:
- * 1. Dispatches using JNI CallNonvirtual<Type>MethodA.
- * 2. Employs stack allocation (alloca) for JNI argument mapping.
- * 3. Safely mirrors standard Java reflection (NPEs on null primitives/receivers).
- * 4. Prevents JNI Type Confusion and memory leaks by caching primitive wrappers globally,
- *    while leveraging java.lang.Number for fast implicit widening/narrowing.
- * 5. Accurately catches and wraps target method exceptions into InvocationTargetException.
+ * The invoker family and the legacy bridge both land here, and everything they need to differ on is
+ * a parameter. `is_static` and `non_virtual` pick the JNI call form, `declaring_class` is the class
+ * to dispatch against - the superclass, for a newInstanceSpecial - and `parameter_types` is what an
+ * argument has to match, which the shorty cannot say because every reference type is 'L'.
+ *
+ * JNI performs no access control, which is what makes an invocation through an invoker bypass
+ * access checks as the interface promises. The other way round, java.lang.reflect.Method.invoke on
+ * the caller's own Executable, runs ART's check with this class as the caller and so refuses every
+ * member that is not public in a public class.
+ *
+ * It also performs no argument or receiver check, and a violation is not reported but executed, so
+ * everything reflection would refuse is refused here first.
  */
-VECTOR_DEF_NATIVE_METHOD(jobject, HookBridge, invokeSpecialMethod, jobject method,
-                         jcharArray shorty, jclass cls, jobject thiz, jobjectArray args) {
-    // --- JNI Global Reference Caching ---
-    // Cached once per process lifecycle to maintain extreme performance and prevent JNI aborts.
-    static jclass cls_Number = (jclass)env->NewGlobalRef(env->FindClass("java/lang/Number"));
-    static jclass cls_Boolean = (jclass)env->NewGlobalRef(env->FindClass("java/lang/Boolean"));
-    static jclass cls_Character = (jclass)env->NewGlobalRef(env->FindClass("java/lang/Character"));
-
-    // Globally cache primitive wrapper classes for safe return value boxing
-    static jclass cls_Integer = (jclass)env->NewGlobalRef(env->FindClass("java/lang/Integer"));
-    static jclass cls_Double = (jclass)env->NewGlobalRef(env->FindClass("java/lang/Double"));
-    static jclass cls_Long = (jclass)env->NewGlobalRef(env->FindClass("java/lang/Long"));
-    static jclass cls_Float = (jclass)env->NewGlobalRef(env->FindClass("java/lang/Float"));
-    static jclass cls_Short = (jclass)env->NewGlobalRef(env->FindClass("java/lang/Short"));
-    static jclass cls_Byte = (jclass)env->NewGlobalRef(env->FindClass("java/lang/Byte"));
-
+VECTOR_DEF_NATIVE_METHOD(jobject, HookBridge, invokeOriginal, jobject executable, jcharArray shorty,
+                         jobjectArray parameter_types, jclass declaring_class, jboolean is_static,
+                         jboolean non_virtual, jobject thiz, jobjectArray args) {
     static jclass cls_ITE =
         (jclass)env->NewGlobalRef(env->FindClass("java/lang/reflect/InvocationTargetException"));
-
     static auto *const ctor_ite = env->GetMethodID(cls_ITE, "<init>", "(Ljava/lang/Throwable;)V");
 
-    static auto *const get_int = env->GetMethodID(cls_Number, "intValue", "()I");
-    static auto *const get_double = env->GetMethodID(cls_Number, "doubleValue", "()D");
-    static auto *const get_long = env->GetMethodID(cls_Number, "longValue", "()J");
-    static auto *const get_float = env->GetMethodID(cls_Number, "floatValue", "()F");
-    static auto *const get_short = env->GetMethodID(cls_Number, "shortValue", "()S");
-    static auto *const get_byte = env->GetMethodID(cls_Number, "byteValue", "()B");
+    // Everything raised here is the caller's own mistake rather than something the call produced,
+    // and Method#invoke reports exactly those unwrapped. The wording is ART's own where this side
+    // knows what ART would have printed; the per-argument refusals below cannot have it, because
+    // ART's form names the resolved method and nothing here carries that name.
+    const auto raise = [env](const char *type, const char *message) -> jobject {
+        jclass cls = env->FindClass(type);
+        env->ThrowNew(cls, message);
+        env->DeleteLocalRef(cls);
+        return nullptr;
+    };
 
-    static auto *const get_char = env->GetMethodID(cls_Character, "charValue", "()C");
-    static auto *const get_boolean = env->GetMethodID(cls_Boolean, "booleanValue", "()Z");
+    auto target = env->FromReflectedMethod(executable);
+    HookItem *hook_item = nullptr;
+    hooked_methods.if_contains(target,
+                               [&hook_item](const auto &it) { hook_item = it.second.get(); });
 
-    static auto *const set_int =
-        env->GetStaticMethodID(cls_Integer, "valueOf", "(I)Ljava/lang/Integer;");
-    static auto *const set_double =
-        env->GetStaticMethodID(cls_Double, "valueOf", "(D)Ljava/lang/Double;");
-    static auto *const set_long =
-        env->GetStaticMethodID(cls_Long, "valueOf", "(J)Ljava/lang/Long;");
-    static auto *const set_float =
-        env->GetStaticMethodID(cls_Float, "valueOf", "(F)Ljava/lang/Float;");
-    static auto *const set_short =
-        env->GetStaticMethodID(cls_Short, "valueOf", "(S)Ljava/lang/Short;");
-    static auto *const set_byte =
-        env->GetStaticMethodID(cls_Byte, "valueOf", "(B)Ljava/lang/Byte;");
-    static auto *const set_char =
-        env->GetStaticMethodID(cls_Character, "valueOf", "(C)Ljava/lang/Character;");
-    static auto *const set_boolean =
-        env->GetStaticMethodID(cls_Boolean, "valueOf", "(Z)Ljava/lang/Boolean;");
+    if (hook_item) {
+        // lsplant hooks by rewriting this ArtMethod's entry point, and CallNonvirtual only skips
+        // the vtable lookup rather than the entry point, so the original body is reachable through
+        // the backup alone. No jmethodID can name the backup either - lsplant rewrites a backup's
+        // id to its target's, which is how it keeps the index based ids of a debuggable process
+        // meaningful - so it is invoked the one way that reads the ArtMethod off the reflected
+        // object instead: Method.invoke. lsplant made the backup accessible, and private when it is
+        // not static, so that call bypasses access checks and is direct whichever form was asked
+        // for, and reflection's own conversions apply to arguments this side has already coerced.
+        if (jobject backup = hook_item->GetBackup(); backup) {
+            return env->CallObjectMethod(backup, invoke, thiz, args);
+        }
+        // A null backup is the failed-hook sentinel. lsplant never replaced the entry point, so
+        // the executable still carries its own body and dispatching it is what runs the original.
+    }
 
-    auto target = env->FromReflectedMethod(method);
-    auto param_len = env->GetArrayLength(shorty) - 1;
+    // Method#invoke ignores the receiver of a static executable, and refuses a missing or a foreign
+    // one rather than letting the callee read another layout's fields at this class's offsets.
+    if (is_static) {
+        thiz = nullptr;
+    } else if (thiz == nullptr) {
+        return raise("java/lang/NullPointerException", "null receiver");
+    } else if (env->IsInstanceOf(thiz, declaring_class) != JNI_TRUE) {
+        jclass actual = env->GetObjectClass(thiz);
+        auto message = fmt::format("Expected receiver of type {}, but got {}",
+                                   PrettyName(env, declaring_class), PrettyName(env, actual));
+        env->DeleteLocalRef(actual);
+        return raise("java/lang/IllegalArgumentException", message.c_str());
+    }
 
-    // --- Argument & Receiver Validation ---
-    auto args_len = args != nullptr ? env->GetArrayLength(args) : 0;
+    const jint param_len = parameter_types != nullptr ? env->GetArrayLength(parameter_types) : 0;
+    // A null argument array is how Method#invoke spells "no arguments", so it is one here too.
+    const jint args_len = args != nullptr ? env->GetArrayLength(args) : 0;
     if (args_len != param_len) {
-        env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"),
-                      "args.length does not match parameter count");
-        return nullptr;
+        return raise(
+            "java/lang/IllegalArgumentException",
+            fmt::format("Wrong number of arguments; expected {}, got {}", param_len, args_len)
+                .c_str());
+    }
+    // No executable declares more than 255 parameters, so anything above that is a caller that
+    // built its own arrays wrong - and the stack allocation below has to be bounded by something.
+    if (param_len > 255 || env->GetArrayLength(shorty) != param_len + 1) {
+        return raise("java/lang/IllegalArgumentException",
+                     "parameter types and shorty do not describe the same executable");
     }
 
-    if (thiz == nullptr) {
-        env->ThrowNew(env->FindClass("java/lang/NullPointerException"), "null receiver");
-        return nullptr;
-    }
-
-    // Allocate jvalue array on the stack
     jvalue *a = param_len > 0 ? static_cast<jvalue *>(alloca(param_len * sizeof(jvalue))) : nullptr;
 
     auto *const shorty_char = env->GetCharArrayElements(shorty, nullptr);
     if (shorty_char == nullptr) {
         return nullptr;  // JVM already threw OutOfMemoryError
     }
-
-    // RAII/Helper for clean JNI array exits
-    auto abort_and_return = [&]() {
-        env->ReleaseCharArrayElements(shorty, shorty_char, JNI_ABORT);
-        return nullptr;
-    };
+    const auto release = [&] { env->ReleaseCharArrayElements(shorty, shorty_char, JNI_ABORT); };
 
     // --- Safe Unboxing ---
     for (jint i = 0; i != param_len; ++i) {
         jobject element = env->GetObjectArrayElement(args, i);
-        if (env->ExceptionCheck()) return abort_and_return();
-
-        char type = shorty_char[i + 1];
-
-        if (element == nullptr) {
-            if (type != 'L' && type != '[') {
-                env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"),
-                              "null primitive argument");
-                return abort_and_return();
-            }
-            a[i].l = nullptr;
-        } else {
-            if (type == 'Z') {
-                if (!env->IsInstanceOf(element, cls_Boolean)) {
-                    env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"),
-                                  "Expected Boolean");
-                    return abort_and_return();
-                }
-                a[i].z = env->CallBooleanMethod(element, get_boolean);
-            } else if (type == 'C') {
-                if (!env->IsInstanceOf(element, cls_Character)) {
-                    env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"),
-                                  "Expected Character");
-                    return abort_and_return();
-                }
-                a[i].c = env->CallCharMethod(element, get_char);
-            } else if (type != 'L' && type != '[') {
-                bool is_number = env->IsInstanceOf(element, cls_Number) == JNI_TRUE;
-                bool is_character =
-                    !is_number && (env->IsInstanceOf(element, cls_Character) == JNI_TRUE);
-
-                if (!is_number && !is_character) {
-                    env->ThrowNew(env->FindClass("java/lang/IllegalArgumentException"),
-                                  "Expected Number or Character");
-                    return abort_and_return();
-                }
-
-                // If a Character is passed to a numeric parameter, extract its value for widening
-                jchar c_val = 0;
-                if (is_character) {
-                    c_val = env->CallCharMethod(element, get_char);
-                    if (env->ExceptionCheck()) return abort_and_return();
-                }
-
-                switch (type) {
-                case 'I':
-                    a[i].i = env->CallIntMethod(element, get_int);
-                    break;
-                case 'D':
-                    a[i].d = env->CallDoubleMethod(element, get_double);
-                    break;
-                case 'J':
-                    a[i].j = env->CallLongMethod(element, get_long);
-                    break;
-                case 'F':
-                    a[i].f = env->CallFloatMethod(element, get_float);
-                    break;
-                case 'S':
-                    a[i].s = env->CallShortMethod(element, get_short);
-                    break;
-                case 'B':
-                    a[i].b = env->CallByteMethod(element, get_byte);
-                    break;
-                }
-            } else {
-                a[i].l = element;
-                element =
-                    nullptr;  // Transferred ownership to jvalue array; will be freed on return
-            }
+        if (env->ExceptionCheck()) {
+            release();
+            return nullptr;
         }
 
-        if (element) env->DeleteLocalRef(element);
-        if (env->ExceptionCheck()) return abort_and_return();
+        const char declared = shorty_char[i + 1];
+        if (declared == 'L') {
+            if (element != nullptr) {
+                auto param = (jclass)env->GetObjectArrayElement(parameter_types, i);
+                const bool assignable = env->IsInstanceOf(element, param) == JNI_TRUE;
+                env->DeleteLocalRef(param);
+                if (!assignable) {
+                    env->DeleteLocalRef(element);
+                    release();
+                    return raise("java/lang/IllegalArgumentException", "argument type mismatch");
+                }
+            }
+            // The local reference lives until this frame returns, which is exactly as long as the
+            // jvalue holding it is read.
+            a[i].l = element;
+            continue;
+        }
+
+        if (element == nullptr) {
+            release();
+            return raise("java/lang/IllegalArgumentException", "null primitive argument");
+        }
+
+        const PrimitiveWrapper *wrapper = WrapperOf(env, element);
+        if (wrapper == nullptr || !Widens(wrapper->shorty, declared)) {
+            env->DeleteLocalRef(element);
+            release();
+            return raise("java/lang/IllegalArgumentException", "argument type mismatch");
+        }
+        StoreWidened(env, *wrapper, declared, element, a[i]);
+        env->DeleteLocalRef(element);
+        if (env->ExceptionCheck()) {
+            release();
+            return nullptr;
+        }
     }
 
-    // --- Non-virtual Invocation ---
-    jvalue ret_val;
-    switch (shorty_char[0]) {
+    // --- Invocation ---
+    jvalue ret_val{};
+    const char returns = shorty_char[0];
+
+    // JNI spells the call form in the function name rather than taking it as a value, so the three
+    // ways to reach a body are three calls for every return kind.
+#define VECTOR_DISPATCH(Kind, member)                                                              \
+    ret_val.member =                                                                               \
+        is_static     ? env->CallStatic##Kind##MethodA(declaring_class, target, a)                 \
+        : non_virtual ? env->CallNonvirtual##Kind##MethodA(thiz, declaring_class, target, a)       \
+                      : env->Call##Kind##MethodA(thiz, target, a)
+
+    switch (returns) {
     case 'I':
-        ret_val.i = env->CallNonvirtualIntMethodA(thiz, cls, target, a);
+        VECTOR_DISPATCH(Int, i);
         break;
     case 'D':
-        ret_val.d = env->CallNonvirtualDoubleMethodA(thiz, cls, target, a);
+        VECTOR_DISPATCH(Double, d);
         break;
     case 'J':
-        ret_val.j = env->CallNonvirtualLongMethodA(thiz, cls, target, a);
+        VECTOR_DISPATCH(Long, j);
         break;
     case 'F':
-        ret_val.f = env->CallNonvirtualFloatMethodA(thiz, cls, target, a);
+        VECTOR_DISPATCH(Float, f);
         break;
     case 'S':
-        ret_val.s = env->CallNonvirtualShortMethodA(thiz, cls, target, a);
+        VECTOR_DISPATCH(Short, s);
         break;
     case 'B':
-        ret_val.b = env->CallNonvirtualByteMethodA(thiz, cls, target, a);
+        VECTOR_DISPATCH(Byte, b);
         break;
     case 'C':
-        ret_val.c = env->CallNonvirtualCharMethodA(thiz, cls, target, a);
+        VECTOR_DISPATCH(Char, c);
         break;
     case 'Z':
-        ret_val.z = env->CallNonvirtualBooleanMethodA(thiz, cls, target, a);
+        VECTOR_DISPATCH(Boolean, z);
         break;
     case 'L':
-        ret_val.l = env->CallNonvirtualObjectMethodA(thiz, cls, target, a);
+        VECTOR_DISPATCH(Object, l);
         break;
     default:
-        env->CallNonvirtualVoidMethodA(thiz, cls, target, a);
+        if (is_static) {
+            env->CallStaticVoidMethodA(declaring_class, target, a);
+        } else if (non_virtual) {
+            env->CallNonvirtualVoidMethodA(thiz, declaring_class, target, a);
+        } else {
+            env->CallVoidMethodA(thiz, target, a);
+        }
         break;
     }
 
+#undef VECTOR_DISPATCH
+
+    // The shorty is not read again, and releasing it first is what keeps every JNI call below out
+    // of the window in which the call's own exception is still pending.
+    release();
+
     // --- Exception Wrapping ---
-    jthrowable target_exception = env->ExceptionOccurred();
-    if (target_exception) {
+    // Only what the call threw is wrapped; every refusal above is the caller's and stays raw.
+    if (jthrowable thrown = env->ExceptionOccurred(); thrown) {
         env->ExceptionClear();
-        jobject ite = env->NewObject(cls_ITE, ctor_ite, target_exception);
-        // Ensure NewObject didn't fail due to OOM before throwing
+        jobject ite = env->NewObject(cls_ITE, ctor_ite, thrown);
+        // NewObject failing leaves its own OutOfMemoryError pending, which is the truer answer.
         if (ite) {
             env->Throw(static_cast<jthrowable>(ite));
         }
-        return abort_and_return();
+        return nullptr;
     }
 
     // --- Box Return Value ---
     jobject value = nullptr;
-    switch (shorty_char[0]) {
-    case 'I':
-        value = env->CallStaticObjectMethod(cls_Integer, set_int, ret_val.i);
-        break;
-    case 'D':
-        value = env->CallStaticObjectMethod(cls_Double, set_double, ret_val.d);
-        break;
-    case 'J':
-        value = env->CallStaticObjectMethod(cls_Long, set_long, ret_val.j);
-        break;
-    case 'F':
-        value = env->CallStaticObjectMethod(cls_Float, set_float, ret_val.f);
-        break;
-    case 'S':
-        value = env->CallStaticObjectMethod(cls_Short, set_short, ret_val.s);
-        break;
-    case 'B':
-        value = env->CallStaticObjectMethod(cls_Byte, set_byte, ret_val.b);
-        break;
-    case 'C':
-        value = env->CallStaticObjectMethod(cls_Character, set_char, ret_val.c);
-        break;
-    case 'Z':
-        value = env->CallStaticObjectMethod(cls_Boolean, set_boolean, ret_val.z);
-        break;
-    case 'L':
+    if (returns == 'L') {
         value = ret_val.l;
-        break;
-    case 'V':
-        value = nullptr;
-        break;
+    } else if (returns != 'V') {
+        // valueOf reads the jvalue member its own shorty names, which is the one the call wrote.
+        if (const PrimitiveWrapper *wrapper = WrapperFor(env, returns); wrapper != nullptr) {
+            value = env->CallStaticObjectMethodA(wrapper->clazz, wrapper->box, &ret_val);
+        }
     }
 
-    env->ReleaseCharArrayElements(shorty, shorty_char, JNI_ABORT);
     return value;
 }
 
@@ -580,11 +788,43 @@ VECTOR_DEF_NATIVE_METHOD(jboolean, HookBridge, setTrusted, jobject cookie) {
  * @return JNI_TRUE when the field is no longer final.
  */
 VECTOR_DEF_NATIVE_METHOD(jboolean, HookBridge, makeFieldWritable, jobject field, jint modifiers) {
-    // jfieldID is the ArtField itself, and `access_flags_` follows the four-byte compressed
-    // `declaring_class_` root that starts it.
-    auto *art_field = reinterpret_cast<uint32_t *>(env->FromReflectedField(field));
-    if (art_field == nullptr) return JNI_FALSE;
+    constexpr uintptr_t kMinArtFieldAddr = 0x1000u;
 
+    // A jfieldID is the ArtField pointer under JniIdType kPointer (the default), so use it directly
+    // and keep the original path there. A debuggable process runs kIndices, where FromReflectedField
+    // returns a small table index instead of a pointer; only then decode the reflected Field to its
+    // mirror::Field and read its ArtField, which is independent of the id encoding.
+    auto *art_field = reinterpret_cast<uint32_t *>(env->FromReflectedField(field));
+    if (reinterpret_cast<uintptr_t>(art_field) < kMinArtFieldAddr) {
+        using CurrentFromGdb = void *(*)();
+        using DecodeJObject = void *(*)(void * /*Thread*/, jobject);  // Thread::DecodeJObject() const
+        using GetArtField = void *(*)(void * /*mirror::Field*/);      // mirror::Field::GetArtField()
+
+        static const auto *art = ElfSymbolCache::GetArt();
+        static const auto current_thread =
+            art ? art->getSymbAddress<CurrentFromGdb>("_ZN3art6Thread14CurrentFromGdbEv") : nullptr;
+        static const auto decode_jobject =
+            art ? art->getSymbAddress<DecodeJObject>("_ZNK3art6Thread13DecodeJObjectEP8_jobject")
+                : nullptr;
+        static const auto get_art_field =
+            art ? art->getSymbAddress<GetArtField>("_ZN3art6mirror5Field11GetArtFieldEv") : nullptr;
+
+        if (current_thread && decode_jobject && get_art_field) {
+            if (void *self = current_thread()) {
+                if (void *field_obj = decode_jobject(self, field)) {
+                    art_field = reinterpret_cast<uint32_t *>(get_art_field(field_obj));
+                }
+            }
+        }
+    }
+
+    // Reject null / an unresolved index / a bogus decode before dereferencing: a real ArtField is a
+    // heap address well above the first page.
+    if (reinterpret_cast<uintptr_t>(art_field) < kMinArtFieldAddr) return JNI_FALSE;
+
+    // `access_flags_` follows the four-byte compressed `declaring_class_` root that starts the
+    // ArtField. Require the Java-visible flags to equal `modifiers`; a mismatch means this is not the
+    // field we think it is (stale decode, different layout) -- refuse rather than write wrong memory.
     constexpr uint32_t kAccJavaFlagsMask = 0xFFFFu;
     constexpr uint32_t kAccFinal = 0x0010u;
 
@@ -659,17 +899,16 @@ VECTOR_DEF_NATIVE_METHOD(jobjectArray, HookBridge, callbackSnapshot, jclass call
  * boot. Resolving them through the same map the rest of the framework uses is what makes the guard
  * hold in both configurations.
  *
- * The four entries are the whole legacy surface the obfuscation table covers: the package itself,
- * AndroidAppHelper, and the XResources / XModuleResources family. Guarding only the package would
- * leave the legacy resource API reachable.
+ * The one entry is the one package the spec names. The obfuscation table also covers
+ * AndroidAppHelper and the XResources / XModuleResources family, and guarding those too was the
+ * wider reading of the same sentence - but the interface says "legacy {@code de.robv.android.xposed}
+ * APIs" and names nothing else, and API 102 offers no resource API of its own, so the wider reading
+ * left a module targeting it with no way to touch resources at all.
  */
 VECTOR_DEF_NATIVE_METHOD(jobjectArray, HookBridge, legacyApiPrefixes) {
     // In the dotted form the obfuscation map is served in - the same form loadClass receives.
     static constexpr const char *kLegacyKeys[] = {
         "de.robv.android.xposed.",
-        "android.app.AndroidApp",
-        "android.content.res.XRes",
-        "android.content.res.XModule",
     };
 
     const auto count = static_cast<jsize>(ArraySize(kLegacyKeys));
@@ -820,9 +1059,9 @@ static JNINativeMethod gMethods[] = {
     VECTOR_NATIVE_METHOD(HookBridge, invokeOriginalMethod,
                          "(Ljava/lang/reflect/Executable;Ljava/lang/Object;[Ljava/"
                          "lang/Object;)Ljava/lang/Object;"),
-    VECTOR_NATIVE_METHOD(HookBridge, invokeSpecialMethod,
-                         "(Ljava/lang/reflect/Executable;[CLjava/lang/Class;Ljava/"
-                         "lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;"),
+    VECTOR_NATIVE_METHOD(HookBridge, invokeOriginal,
+                         "(Ljava/lang/reflect/Executable;[C[Ljava/lang/Class;Ljava/"
+                         "lang/Class;ZZLjava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;"),
     VECTOR_NATIVE_METHOD(HookBridge, allocateObject, "(Ljava/lang/Class;)Ljava/lang/Object;"),
     VECTOR_NATIVE_METHOD(HookBridge, instanceOf, "(Ljava/lang/Object;Ljava/lang/Class;)Z"),
     VECTOR_NATIVE_METHOD(HookBridge, setTrusted, "(Ljava/lang/Object;)Z"),

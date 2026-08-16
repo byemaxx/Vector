@@ -82,8 +82,10 @@ struct ResXMLTree_node {
     void *comment;
 };
 
-class ResXMLTree;
-
+// Only the four words below are mirrored, and only because mCurExt is where the attributes of the
+// current tag live. Everything further in - the tree the parser walks, its string pool, its
+// attribute name map - is reached through the exported accessors instead: those members have moved
+// in almost every release since Pie, and a struct that guesses at them fails silently.
 class ResXMLParser {
 public:
     enum event_code_t {
@@ -100,36 +102,31 @@ public:
         TEXT = RES_XML_CDATA_TYPE
     };
 
-    const ResXMLTree &mTree;
+    const void *mTree;
     event_code_t mEventCode;
     const ResXMLTree_node *mCurNode;
     const void *mCurExt;
 };
 
+// Handled only through pointers the framework hands out, so none of its fields are mirrored: the
+// class gained a vtable in Android 11 and a lookup cache in Android 15, and each of those moved
+// everything behind it.
 class ResStringPool {
 public:
-    status_t mError;
-    void *mOwnedData;
-    const void *mHeader;
-    size_t mSize;
-    mutable pthread_mutex_t mDecodeLock;
-    const uint32_t *mEntries;
-    const uint32_t *mEntryStyles;
-    const void *mStrings;
-    char16_t mutable **mCache;
-    uint32_t mStringPoolSize;  // number of uint16_t
-    const uint32_t *mStyles;
-    uint32_t mStylePoolSize;  // number of uint32_t
-
     using stringAtRet = expected<StringPiece16, NullOrIOError>;
 
-    inline static auto stringAtS_ = ("_ZNK7android13ResStringPool8stringAtEjPj"_sym |
-                                     "_ZNK7android13ResStringPool8stringAtEmPm"_sym)
-                                        .as<stringAtRet (ResStringPool::*)(size_t)>;
-
-    inline static auto stringAt_ = ("_ZNK7android13ResStringPool8stringAtEj"_sym |
-                                    "_ZNK7android13ResStringPool8stringAtEm"_sym)
+    // The two overloads are told apart by the arity in their mangled names, and binding one to the
+    // other's signature links cleanly and then breaks the ABI. EjPj/EmPm is stringAt(idx, outLen)
+    // returning a raw pointer, which is what Android 11 and older export; Ej/Em is stringAt(idx)
+    // returning the expected, which replaced it in Android 12 and whose result comes back through
+    // the indirect-result register a raw-pointer caller never sets.
+    inline static auto stringAt_ = ("_ZNK7android13ResStringPool8stringAtEjPj"_sym |
+                                    "_ZNK7android13ResStringPool8stringAtEmPm"_sym)
                                        .as<const char16_t *(ResStringPool::*)(size_t, size_t *)>;
+
+    inline static auto stringAtS_ = ("_ZNK7android13ResStringPool8stringAtEj"_sym |
+                                     "_ZNK7android13ResStringPool8stringAtEm"_sym)
+                                        .as<stringAtRet (ResStringPool::*)(size_t)>;
 
     StringPiece16 stringAt(size_t idx) const {
         if (stringAt_) {
@@ -148,22 +145,6 @@ public:
     static bool setup(const lsplant::HookHandler &handler) {
         return handler(stringAt_) || handler(stringAtS_);
     }
-};
-
-class ResXMLTree : public ResXMLParser {
-public:
-    void *mDynamicRefTable;
-    status_t mError;
-    void *mOwnedData;
-    const void *mHeader;
-    size_t mSize;
-    const uint8_t *mDataEnd;
-    ResStringPool mStrings;
-    const uint32_t *mResIds;
-    size_t mNumResIds;
-    const ResXMLTree_node *mRootNode;
-    const void *mRootExt;
-    event_code_t mRootCode;
 };
 
 struct ResStringPool_ref {
