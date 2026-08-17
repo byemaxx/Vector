@@ -149,23 +149,19 @@ class VectorModuleClassLoader : ByteBufferDexClassLoader {
 
         /**
          * What the legacy API is called *here*, which is not what it is called in source: the
-         * daemon rewrites `de.robv.android.xposed`, `AndroidAppHelper` and the `XResources` family
-         * in the framework dex and in every module dex when dex obfuscation is on, so the names a
-         * module asks this loader for are a different random string on every boot. Matching the
-         * literal package would leave the 102 rule unenforced on exactly the builds that have
-         * obfuscation turned on.
+         * daemon rewrites `de.robv.android.xposed` in the framework dex and in every module dex
+         * when dex obfuscation is on, so the name a module asks this loader for is a different
+         * random string on every boot. Matching the literal package would leave the 102 rule
+         * unenforced on exactly the builds that have obfuscation turned on.
+         *
+         * Only that package is refused. `AndroidAppHelper` and the `XResources` family are rewritten
+         * by the same table and were once refused with it, but the interface names one package and
+         * gives modules targeting 102 no resource API to move to.
          */
         private val LEGACY_API_PREFIXES: Array<String> by lazy {
             runCatching { HookBridge.legacyApiPrefixes() }
                 .onFailure { Log.w(TAG, "Cannot resolve the legacy API prefixes", it) }
-                .getOrElse {
-                    arrayOf(
-                        "de.robv.android.xposed.",
-                        "android.app.AndroidApp",
-                        "android.content.res.XRes",
-                        "android.content.res.XModule",
-                    )
-                }
+                .getOrElse { arrayOf("de.robv.android.xposed.") }
         }
         private val SYSTEM_NATIVE_LIBRARY_DIRS = splitPaths(System.getProperty("java.library.path"))
 

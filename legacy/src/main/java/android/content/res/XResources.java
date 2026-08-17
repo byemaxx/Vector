@@ -73,6 +73,8 @@ public class XResources extends XResourcesSuperClass {
 
 	private static final SparseArray<HashMap<String, CopyOnWriteSortedSet<XC_LayoutInflated>>> sLayoutCallbacks = new SparseArray<>();
 	private static final WeakHashMap<XmlResourceParser, XMLInstanceDetails> sXmlInstanceDetails = new WeakHashMap<>();
+	// The XML blocks whose native tree has already had its module IDs rewritten. See [rewriteXmlReferences].
+	private static final WeakHashMap<Object, Boolean> sRewrittenXmlBlocks = new WeakHashMap<>();
 
 	private static final String EXTRA_XML_INSTANCE_DETAILS = "xmlInstanceDetails";
 	// No lambda, and no anonymous ThreadLocal either. See the note above [includedLayouts].
@@ -669,14 +671,8 @@ public class XResources extends XResourcesSuperClass {
 			Resources repRes = ((XResForwarder) replacement).getResources();
 			int repId = ((XResForwarder) replacement).getId();
 
-			boolean loadedFromCache = isXmlCached(repRes, repId);
 			XmlResourceParser result = repRes.getAnimation(repId);
-
-			if (!loadedFromCache) {
-				long parseState = getLongField(result, "mParseState");
-				rewriteXmlReferencesNative(parseState, this, repRes);
-			}
-
+			rewriteXmlReferences(result, repRes);
 			return result;
 		}
 		return super.getAnimation(id);
@@ -958,13 +954,8 @@ public class XResources extends XResourcesSuperClass {
 			Resources repRes = ((XResForwarder) replacement).getResources();
 			int repId = ((XResForwarder) replacement).getId();
 
-			boolean loadedFromCache = isXmlCached(repRes, repId);
 			result = repRes.getLayout(repId);
-
-			if (!loadedFromCache) {
-				long parseState = getLongField(result, "mParseState");
-				rewriteXmlReferencesNative(parseState, this, repRes);
-			}
+			rewriteXmlReferences(result, repRes);
 		} else {
 			result = super.getLayout(id);
 		}
@@ -1144,28 +1135,46 @@ public class XResources extends XResourcesSuperClass {
 			Resources repRes = ((XResForwarder) replacement).getResources();
 			int repId = ((XResForwarder) replacement).getId();
 
-			boolean loadedFromCache = isXmlCached(repRes, repId);
 			XmlResourceParser result = repRes.getXml(repId);
-
-			if (!loadedFromCache) {
-				long parseState = getLongField(result, "mParseState");
-				rewriteXmlReferencesNative(parseState, this, repRes);
-			}
-
+			rewriteXmlReferences(result, repRes);
 			return result;
 		}
 		return super.getXml(id);
 	}
 
-	private static boolean isXmlCached(Resources res, int id) {
-		int[] mCachedXmlBlockIds = (int[]) getObjectField(getObjectField(res, "mResourcesImpl"), "mCachedXmlBlockCookies");
-		synchronized (mCachedXmlBlockIds) {
-			for (int cachedId : mCachedXmlBlockIds) {
-				if (cachedId == id)
-					return true;
+	/**
+	 * Rewrites the module's IDs in a replacement document, unless that has already happened.
+	 *
+	 * The rewrite mutates the native tree in place, and that tree belongs to the {@code XmlBlock},
+	 * not to the parser: {@code ResourcesImpl} keeps a small cache of blocks and hands out a fresh
+	 * parser over the same block for every later request, so "already rewritten" is a property of
+	 * the block and nothing else. That is why the answer is kept per block here.
+	 *
+	 * Getting it wrong is not merely wasted work. A second pass sees the host IDs the first one
+	 * wrote and feeds them back through {@link #translateResId}, which resolves them against the
+	 * module's table — where the same 0x7f package ID makes an unrelated entry a plausible match —
+	 * and then installs a replacement for whatever it found.
+	 */
+	private void rewriteXmlReferences(XmlResourceParser parser, Resources repRes) {
+		Object block;
+		try {
+			block = getObjectField(parser, "mBlock");
+		} catch (Throwable ignored) {
+			// A ROM that renamed the field costs the deduplication, not the rewrite.
+			block = null;
+		}
+
+		if (block != null) {
+			synchronized (sRewrittenXmlBlocks) {
+				// Marked before the rewrite rather than after: one that throws part of the way
+				// through leaves a partly translated tree, and a retry would translate that part
+				// a second time.
+				if (sRewrittenXmlBlocks.put(block, Boolean.TRUE) != null)
+					return;
 			}
 		}
-		return false;
+
+		rewriteXmlReferencesNative(getLongField(parser, "mParseState"), this, repRes);
 	}
 
 	/**
