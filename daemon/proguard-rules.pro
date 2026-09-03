@@ -47,3 +47,8 @@
 }
 -repackageclasses
 -allowaccessmodification
+
+# Android R and newer only: this holder must stay isolated from SystemServerService so ART on
+# pre-R releases never resolves android.os.IServiceCallback$Stub while verifying the registration
+# method. Renaming is fine; merging or inlining the class back into its caller is not.
+-keep,allowobfuscation class org.matrix.vector.daemon.ipc.ServiceRegistrationWatcher { *; }

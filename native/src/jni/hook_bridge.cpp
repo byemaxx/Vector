@@ -769,6 +769,15 @@ VECTOR_DEF_NATIVE_METHOD(jboolean, HookBridge, setTrusted, jobject cookie) {
 }
 
 /**
+ * @brief Reports whether the pages spanning [addr, addr + len) are mapped.
+ *
+ * msync on an unmapped range fails with ENOMEM, which turns a read that would raise SIGSEGV into
+ * an answer before either ArtField candidate is dereferenced below. The definition remains next to
+ * the static-initializer scanner, which uses the same guard.
+ */
+static bool IsMapped(uintptr_t addr, size_t len);
+
+/**
  * @brief Clears ACC_FINAL on a field, so that reflection will write it again.
  *
  * Android 17 refuses every reflective write to a static final field
@@ -782,57 +791,70 @@ VECTOR_DEF_NATIVE_METHOD(jboolean, HookBridge, setTrusted, jobject cookie) {
  * to nobody, so this stays a write and never becomes an abort.
  *
  * [modifiers] is what java.lang.reflect.Field reports, and the ArtField's access flags have to
- * agree with it before anything is written: that is what says this pointer is an ArtField laid
- * out the way this expects, rather than a JNI index id or a layout that has moved.
+ * agree with it before anything is written: that is what says an address is an ArtField laid out
+ * the way this expects, rather than a JNI index id or a layout that has moved.
  *
  * @return JNI_TRUE when the field is no longer final.
  */
 VECTOR_DEF_NATIVE_METHOD(jboolean, HookBridge, makeFieldWritable, jobject field, jint modifiers) {
     constexpr uintptr_t kMinArtFieldAddr = 0x1000u;
+    constexpr uint32_t kAccJavaFlagsMask = 0xFFFFu;
+    constexpr uint32_t kAccFinal = 0x0010u;
 
-    // A jfieldID is the ArtField pointer under JniIdType kPointer (the default), so use it directly
-    // and keep the original path there. A debuggable process runs kIndices, where FromReflectedField
-    // returns a small table index instead of a pointer; only then decode the reflected Field to its
-    // mirror::Field and read its ArtField, which is independent of the id encoding.
-    auto *art_field = reinterpret_cast<uint32_t *>(env->FromReflectedField(field));
-    if (reinterpret_cast<uintptr_t>(art_field) < kMinArtFieldAddr) {
-        using CurrentFromGdb = void *(*)();
-        using DecodeJObject = void *(*)(void * /*Thread*/, jobject);  // Thread::DecodeJObject() const
-        using GetArtField = void *(*)(void * /*mirror::Field*/);      // mirror::Field::GetArtField()
+    // Android 17 canary ART marks a direct field pointer in the high bits of the jfieldID:
+    // DecodeArtFieldInternal tests bit 55 and clears bits 54-55 before dereferencing it. Build the
+    // mask in 64 bits and narrow it, so it becomes zero naturally on 32-bit targets.
+    constexpr uintptr_t kTagBits = static_cast<uintptr_t>(uint64_t{3} << 54);
 
-        static const auto *art = ElfSymbolCache::GetArt();
-        static const auto current_thread =
-            art ? art->getSymbAddress<CurrentFromGdb>("_ZN3art6Thread14CurrentFromGdbEv") : nullptr;
-        static const auto decode_jobject =
-            art ? art->getSymbAddress<DecodeJObject>("_ZNK3art6Thread13DecodeJObjectEP8_jobject")
-                : nullptr;
-        static const auto get_art_field =
-            art ? art->getSymbAddress<GetArtField>("_ZN3art6mirror5Field11GetArtFieldEv") : nullptr;
+    // Clear ACC_FINAL only after proving the candidate page is mapped and its Java-visible flags
+    // match the reflected Field. A wrong decode therefore becomes a refusal instead of SIGSEGV.
+    auto clear_final_at = [&](uintptr_t candidate) {
+        if (candidate < kMinArtFieldAddr) return false;
+        if (!IsMapped(candidate, 2 * sizeof(uint32_t))) return false;
 
-        if (current_thread && decode_jobject && get_art_field) {
-            if (void *self = current_thread()) {
-                if (void *field_obj = decode_jobject(self, field)) {
-                    art_field = reinterpret_cast<uint32_t *>(get_art_field(field_obj));
-                }
+        auto *art_field = reinterpret_cast<uint32_t *>(candidate);
+        uint32_t flags = art_field[1];
+        if ((flags & kAccJavaFlagsMask) != static_cast<uint32_t>(modifiers)) return false;
+
+        art_field[1] = flags & ~kAccFinal;
+        return true;
+    };
+
+    // Try direct-pointer encodings first. An odd id is an index encoding, not an address, so it is
+    // left to the reflected mirror::Field fallback below. For direct IDs, neither the raw nor the
+    // tag-cleared candidate is trusted until clear_final_at validates it.
+    const auto id = reinterpret_cast<uintptr_t>(env->FromReflectedField(field));
+    if (id != 0 && (id & 1u) == 0u) {
+        if (clear_final_at(id)) return JNI_TRUE;
+        if ((id & kTagBits) != 0 && clear_final_at(id & ~kTagBits)) return JNI_TRUE;
+    }
+
+    // Decode the reflected Field through mirror::Field for index-based JNI IDs. These ART symbols
+    // are not exported on every release, so this remains a best-effort fallback.
+    using CurrentFromGdb = void *(*)();
+    using DecodeJObject = void *(*)(void * /*Thread*/, jobject);  // Thread::DecodeJObject() const
+    using GetArtField = void *(*)(void * /*mirror::Field*/);      // mirror::Field::GetArtField()
+
+    static const auto *art = ElfSymbolCache::GetArt();
+    static const auto current_thread =
+        art ? art->getSymbAddress<CurrentFromGdb>("_ZN3art6Thread14CurrentFromGdbEv") : nullptr;
+    static const auto decode_jobject =
+        art ? art->getSymbAddress<DecodeJObject>("_ZNK3art6Thread13DecodeJObjectEP8_jobject")
+            : nullptr;
+    static const auto get_art_field =
+        art ? art->getSymbAddress<GetArtField>("_ZN3art6mirror5Field11GetArtFieldEv") : nullptr;
+
+    if (current_thread && decode_jobject && get_art_field) {
+        if (void *self = current_thread()) {
+            if (void *field_obj = decode_jobject(self, field)) {
+                return clear_final_at(reinterpret_cast<uintptr_t>(get_art_field(field_obj)))
+                           ? JNI_TRUE
+                           : JNI_FALSE;
             }
         }
     }
 
-    // Reject null / an unresolved index / a bogus decode before dereferencing: a real ArtField is a
-    // heap address well above the first page.
-    if (reinterpret_cast<uintptr_t>(art_field) < kMinArtFieldAddr) return JNI_FALSE;
-
-    // `access_flags_` follows the four-byte compressed `declaring_class_` root that starts the
-    // ArtField. Require the Java-visible flags to equal `modifiers`; a mismatch means this is not the
-    // field we think it is (stale decode, different layout) -- refuse rather than write wrong memory.
-    constexpr uint32_t kAccJavaFlagsMask = 0xFFFFu;
-    constexpr uint32_t kAccFinal = 0x0010u;
-
-    uint32_t flags = art_field[1];
-    if ((flags & kAccJavaFlagsMask) != static_cast<uint32_t>(modifiers)) return JNI_FALSE;
-
-    art_field[1] = flags & ~kAccFinal;
-    return JNI_TRUE;
+    return JNI_FALSE;
 }
 
 /**

@@ -122,6 +122,28 @@ object FileSystem {
           Files.createDirectories(configDirPath)
         }
         .onFailure { Log.e(TAG, "Failed to initialize directories", it) }
+    ensureManagerApkLabel()
+  }
+
+  /**
+   * Reasserts the installer label on manager.apk when /data/adb has been restorecon'd.
+   *
+   * The manager APK is transferred as a file descriptor to the parasitic shell host (and to an
+   * installed Manager during self-update), so SELinux checks the receiver's ability to read the
+   * file. A system-image update can relabel the module tree back to adb_data_file even though the
+   * daemon itself remains able to open it as root. Holding manager.apk at system_file keeps the
+   * Binder FD transfer readable by shell/app domains without changing the SR metadata labels.
+   */
+  private fun ensureManagerApkLabel() {
+    if (!managerApkPath.exists()) return
+    val path = managerApkPath.toString()
+    runCatching {
+          if (SELinux.getFileContext(path) == SYSTEM_FILE_CONTEXT) return@runCatching
+          if (!SELinux.setFileContext(path, SYSTEM_FILE_CONTEXT)) {
+            Log.w(TAG, "Failed to relabel $path as $SYSTEM_FILE_CONTEXT")
+          }
+        }
+        .onFailure { Log.e(TAG, "Failed to relabel $path", it) }
   }
 
   fun setupCli(): String {
