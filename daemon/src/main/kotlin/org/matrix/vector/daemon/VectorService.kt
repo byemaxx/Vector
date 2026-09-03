@@ -281,6 +281,10 @@ object VectorService : IDaemonService.Stub() {
 
           if (isRemovedForAllUsers && ModuleDatabase.removeModule(moduleName)) {
             isXposedModule = true
+          } else if (ModuleDatabase.isEnabledScopeTarget(moduleName)) {
+            // Scope rows deliberately outlive their target package. Rebuild now so an absent target
+            // does not leave a stale uid entry behind until ACTION_UID_REMOVED happens to arrive.
+            ConfigCache.requestCacheUpdate()
           }
         }
       }
@@ -290,7 +294,11 @@ object VectorService : IDaemonService.Stub() {
           ModuleDatabase.updateModuleApkPath(
               moduleName, ConfigCache.getModuleApkPath(appInfo), false)
         } else {
-          if (ConfigCache.state.scopes.keys.any { it.uid == uid }) {
+          // Scope configuration is keyed by package name, while the runtime cache is keyed by uid.
+          // A reinstalled target can return with a different uid, so ask the durable scope table by
+          // name first. Keep the uid check for derived self-scope entries that have no table row.
+          if ((moduleName != null && ModuleDatabase.isEnabledScopeTarget(moduleName)) ||
+              ConfigCache.state.scopes.keys.any { it.uid == uid }) {
             ConfigCache.requestCacheUpdate()
           }
 

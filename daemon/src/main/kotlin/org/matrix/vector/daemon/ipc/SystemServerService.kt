@@ -13,6 +13,32 @@ import org.matrix.vector.daemon.system.getSystemServiceManager
 
 private const val TAG = "VectorSystemServer"
 
+/**
+ * Holds the Android R+ IServiceCallback implementation behind a separate class boundary.
+ *
+ * ART resolves types referenced by a method while verifying that method. Keeping
+ * IServiceCallback.Stub directly inside SystemServerService.registerProxyService therefore makes
+ * pre-R releases try to resolve a class they do not have before the SDK gate can run. This holder
+ * is only initialized on R and newer; daemon/proguard-rules.pro keeps R8 from merging it back into
+ * SystemServerService.
+ */
+private object ServiceRegistrationWatcher {
+
+  fun watch(serviceName: String) {
+    val callback =
+        object : IServiceCallback.Stub() {
+          override fun onRegistration(name: String, binder: IBinder?) {
+            if (name == serviceName && binder != null) {
+              SystemServerService.adoptOriginService(name, binder)
+            }
+          }
+
+          override fun asBinder(): IBinder = this
+        }
+    getSystemServiceManager().registerForNotifications(serviceName, callback)
+  }
+}
+
 object SystemServerService : ILSPSystemServerService.Stub(), IBinder.DeathRecipient {
 
   private var proxyServiceName: String? = null
@@ -27,23 +53,9 @@ object SystemServerService : ILSPSystemServerService.Stub(), IBinder.DeathRecipi
     Log.d(TAG, "Registering bridge service for `system_server` with name `$serviceName`.")
 
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-      val callback =
-          object : IServiceCallback.Stub() {
-            // The IServiceCallback will tell us when the real Android service is ready,
-            // allowing us to capture it and then naturally stop intercepting traffic.
-            override fun onRegistration(name: String, binder: IBinder?) {
-              if (name == serviceName && binder != null && binder !== this@SystemServerService) {
-                Log.d(TAG, "Intercepted system service registration with name `$name`")
-                originService = binder
-                runCatching { binder.linkToDeath(this@SystemServerService, 0) }
-              }
-            }
-
-            override fun asBinder(): IBinder = this
-          }
       runCatching {
             if (!callbackRegistered || proxyServiceName != serviceName) {
-              getSystemServiceManager().registerForNotifications(serviceName, callback)
+              ServiceRegistrationWatcher.watch(serviceName)
               callbackRegistered = true
             }
             ServiceManager.addService(serviceName, this)
@@ -57,6 +69,13 @@ object SystemServerService : ILSPSystemServerService.Stub(), IBinder.DeathRecipi
           }
           .onFailure { Log.e(TAG, "Failed to register proxy service `$serviceName`", it) }
     }
+  }
+
+  internal fun adoptOriginService(name: String, binder: IBinder) {
+    if (binder === this) return
+    Log.d(TAG, "Intercepted system service registration with name `$name`")
+    originService = binder
+    runCatching { binder.linkToDeath(this, 0) }
   }
 
   @Synchronized

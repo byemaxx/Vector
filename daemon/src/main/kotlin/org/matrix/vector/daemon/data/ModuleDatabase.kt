@@ -134,6 +134,27 @@ object ModuleDatabase {
     return true
   }
 
+  /**
+   * Returns whether any enabled module names [appPackage] as a scope target in any user.
+   *
+   * Scope configuration is stored by package name while the runtime cache is keyed by uid. A
+   * target that is uninstalled and later reinstalled may receive a different uid, so package
+   * events must consult the durable configuration rather than the stale runtime key when deciding
+   * whether a cache rebuild is required.
+   */
+  fun isEnabledScopeTarget(appPackage: String): Boolean =
+      ConfigCache.dbHelper.readableDatabase
+          .query(
+              "scope INNER JOIN modules ON scope.mid = modules.mid",
+              arrayOf("1"),
+              "app_pkg_name = ? AND enabled = 1",
+              arrayOf(appPackage),
+              null,
+              null,
+              null,
+              "1")
+          .use { it.moveToFirst() }
+
   fun updateModuleApkPath(packageName: String, apkPath: String?, force: Boolean): Boolean {
     if (apkPath == null || packageName == "lspd") return false
     val values =
